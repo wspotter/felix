@@ -1,0 +1,35 @@
+{
+  "name": "Voice Agent",
+  "short_name": "Voice Agent",
+  "description": "Real-time voice assistant with natural conversation",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Start Talking",
+      "short_name": "Talk",
+      "description": "Start voice conversation",
+      "url": "/?action=talk",
+      "icons": [{ "src": "/static/icons/icon-192.svg", "sizes": "192x192" }]
+    }
+  ]
+}

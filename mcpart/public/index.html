@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Server Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>🎨 Art Supply MCP</h1>
+                <div class="status-badge" id="statusBadge">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Loading...</span>
+                </div>
+            </div>
+
+            <div class="stats-mini">
+                <div class="stat-mini">
+                    <div class="stat-mini-value" id="toolCalls">0</div>
+                    <div class="stat-mini-label">Tool Calls</div>
+                </div>
+                <div class="stat-mini">
+                    <div class="stat-mini-value" id="uptime">--</div>
+                    <div class="stat-mini-label">Uptime</div>
+                </div>
+            </div>
+
+            <!-- Category Navigation -->
+            <nav class="category-nav">
+                <div class="nav-header">CATEGORIES</div>
+                <button class="nav-item active" data-category="all">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-label">All Tools</span>
+                    <span class="nav-count" id="count-all">36</span>
+                </button>
+                <button class="nav-item" data-category="Inventory Management">
+                    <span class="nav-icon">📦</span>
+                    <span class="nav-label">Inventory</span>
+                    <span class="nav-count" id="count-inventory">4</span>
+                </button>
+                <button class="nav-item" data-category="Customer Management">
+                    <span class="nav-icon">👥</span>
+                    <span class="nav-label">Customers</span>
+                    <span class="nav-count" id="count-customers">4</span>
+                </button>
+                <button class="nav-item" data-category="Sales & Analytics">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-label">Sales</span>
+                    <span class="nav-count" id="count-sales">4</span>
+                </button>
+                <button class="nav-item" data-category="Supplier Management">
+                    <span class="nav-icon">🏢</span>
+                    <span class="nav-label">Suppliers</span>
+                    <span class="nav-count" id="count-suppliers">3</span>
+                </button>
+                <button class="nav-item" data-category="Operations">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-label">Operations</span>
+                    <span class="nav-count" id="count-operations">4</span>
+                </button>
+                <button class="nav-item" data-category="Pricing & Promotions">
+                    <span class="nav-icon">💲</span>
+                    <span class="nav-label">Pricing</span>
+                    <span class="nav-count" id="count-pricing">2</span>
+                </button>
+                <button class="nav-item" data-category="Reporting">
+                    <span class="nav-icon">📈</span>
+                    <span class="nav-label">Reporting</span>
+                    <span class="nav-count" id="count-reporting">3</span>
+                </button>
+                <button class="nav-item" data-category="Social Media Management">
+                    <span class="nav-icon">📱</span>
+                    <span class="nav-label">Social Media</span>
+                    <span class="nav-count" id="count-social">12</span>
+                </button>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Search Bar -->
+            <div class="search-bar">
+                <input type="text" id="searchTools" placeholder="� Search tools..." class="search-input">
+                <div class="search-info">
+                    <span id="toolCount">36 tools</span> • 
+                    <span id="currentCategory">All Categories</span>
+                </div>
+            </div>
+
+            <!-- Tools Grid -->
+            <div id="toolsGrid" class="tools-grid">
+                <div class="loading-message">Loading tools...</div>
+            </div>
+
+            <!-- Test Panel (Slide-in) -->
+            <div id="testPanel" class="test-panel">
+                <div class="test-panel-header">
+                    <h2>Test Tool</h2>
+                    <button id="closePanel" class="btn-icon">✕</button>
+                </div>
+                <div class="test-panel-body">
+                    <div class="selected-tool-info" id="selectedToolInfo">
+                        <div class="tool-name" id="testToolName">No tool selected</div>
+                        <div class="tool-description" id="testToolDesc">Select a tool to test</div>
+                    </div>
+                    <form id="testToolForm">
+                        <div class="form-group">
+                            <label for="toolInput">Input (JSON format)</label>
+                            <textarea id="toolInput" rows="6" placeholder='{"key": "value"}'></textarea>
+                            <div class="form-hint">Enter parameters as JSON object</div>
+                        </div>
+                        <button type="submit" class="btn-primary">▶ Run Tool</button>
+                    </form>
+                    <div id="testResult" class="result-box"></div>
+                </div>
+            </div>
+
+            <!-- Activity Log (Bottom) -->
+            <div class="activity-footer">
+                <div class="activity-header">
+                    <span>Recent Activity</span>
+                    <button id="clearLog" class="btn-clear">Clear</button>
+                </div>
+                <div id="activityLog" class="activity-log">
+                    <div class="log-entry">Dashboard initialized</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

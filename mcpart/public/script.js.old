@@ -1,0 +1,193 @@
+// API base URL
+const API_BASE = 'http://localhost:3000/api';
+
+// DOM elements
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const uptimeEl = document.getElementById('uptime');
+const toolCallsEl = document.getElementById('toolCalls');
+const lastActivityEl = document.getElementById('lastActivity');
+const toolsList = document.getElementById('toolsList');
+const testToolForm = document.getElementById('testToolForm');
+const testResult = document.getElementById('testResult');
+const activityLog = document.getElementById('activityLog');
+const categoryFilter = document.getElementById('categoryFilter');
+const toolNameSelect = document.getElementById('toolName');
+
+let allTools = [];
+
+// Fetch server status
+async function fetchStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/status`);
+        const data = await response.json();
+        
+        statusText.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+        statusDot.classList.remove('offline');
+        
+        // Format uptime
+        const uptimeSeconds = Math.floor(data.uptime / 1000);
+        const hours = Math.floor(uptimeSeconds / 3600);
+        const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+        const seconds = uptimeSeconds % 60;
+        uptimeEl.textContent = `${hours}h ${minutes}m ${seconds}s`;
+        
+        toolCallsEl.textContent = data.toolCalls;
+        lastActivityEl.textContent = new Date(data.lastActivity).toLocaleTimeString();
+    } catch (error) {
+        statusText.textContent = 'Offline';
+        statusDot.classList.add('offline');
+        console.error('Failed to fetch status:', error);
+    }
+}
+
+// Fetch available tools
+async function fetchTools() {
+    try {
+        const response = await fetch(`${API_BASE}/tools`);
+        const data = await response.json();
+        
+        allTools = data.tools;
+        
+        // Populate tool selector
+        toolNameSelect.innerHTML = '<option value="">Select a tool...</option>' +
+            allTools.map(tool => `<option value="${tool.name}">${tool.name} (${tool.category})</option>`).join('');
+        
+        displayTools();
+        addLogEntry('Tools list refreshed');
+    } catch (error) {
+        toolsList.innerHTML = '<p style="color: var(--danger-color);">Failed to load tools</p>';
+        console.error('Failed to fetch tools:', error);
+    }
+}
+
+// Display tools with optional filtering
+function displayTools() {
+    const selectedCategory = categoryFilter.value;
+    const filteredTools = selectedCategory 
+        ? allTools.filter(tool => tool.category === selectedCategory)
+        : allTools;
+    
+    if (filteredTools.length === 0) {
+        toolsList.innerHTML = '<p style="color: var(--text-secondary);">No tools in this category</p>';
+        return;
+    }
+    
+    // Group by category
+    const grouped = filteredTools.reduce((acc, tool) => {
+        if (!acc[tool.category]) acc[tool.category] = [];
+        acc[tool.category].push(tool);
+        return acc;
+    }, {});
+    
+    toolsList.innerHTML = Object.entries(grouped).map(([category, tools]) => `
+        <div style="margin-bottom: 1.5rem;">
+            <h3 style="font-size: 0.9rem; color: var(--primary-color); margin-bottom: 0.5rem;">${category}</h3>
+            ${tools.map(tool => `
+                <div class="tool-item">
+                    <h3>${tool.name}</h3>
+                    <p>${tool.description}</p>
+                    <div class="tool-stats">✓ Called ${tool.callCount} times</div>
+                </div>
+            `).join('')}
+        </div>
+    `).join('');
+}
+
+// Listen for category filter changes
+categoryFilter.addEventListener('change', displayTools);
+
+// Test tool
+testToolForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const toolName = toolNameSelect.value;
+    const toolInputText = document.getElementById('toolInput').value;
+    
+    if (!toolName) {
+        testResult.className = 'result-box show error';
+        testResult.innerHTML = '<strong>✗ Error:</strong> Please select a tool';
+        return;
+    }
+    
+    let toolInput = {};
+    if (toolInputText.trim()) {
+        try {
+            toolInput = JSON.parse(toolInputText);
+        } catch (e) {
+            testResult.className = 'result-box show error';
+            testResult.innerHTML = '<strong>✗ Error:</strong> Invalid JSON input';
+            return;
+        }
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/test-tool`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                toolName,
+                input: toolInput
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            testResult.className = 'result-box show success';
+            testResult.innerHTML = `
+                <strong>✓ Success!</strong><br>
+                Tool: ${toolName}<br>
+                Category: ${data.category}<br>
+                Result: ${data.result}<br>
+                <small>Timestamp: ${new Date(data.timestamp).toLocaleString()}</small>
+            `;
+            addLogEntry(`Tool "${toolName}" executed successfully`);
+        } else {
+            testResult.className = 'result-box show error';
+            testResult.innerHTML = `<strong>✗ Error:</strong> ${data.error}`;
+            addLogEntry(`Tool execution failed: ${data.error}`, 'error');
+        }
+        
+        // Refresh stats and tools
+        fetchStatus();
+        fetchTools();
+    } catch (error) {
+        testResult.className = 'result-box show error';
+        testResult.innerHTML = `<strong>✗ Error:</strong> Failed to connect to server`;
+        console.error('Failed to test tool:', error);
+        addLogEntry('Failed to connect to server', 'error');
+    }
+});
+
+// Add log entry
+function addLogEntry(message, type = 'info') {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    const timestamp = new Date().toLocaleTimeString();
+    entry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+    activityLog.insertBefore(entry, activityLog.firstChild);
+    
+    // Keep only last 50 entries
+    while (activityLog.children.length > 50) {
+        activityLog.removeChild(activityLog.lastChild);
+    }
+}
+
+// Initialize dashboard
+function init() {
+    fetchStatus();
+    fetchTools();
+    addLogEntry('Dashboard connected to server');
+    
+    // Refresh status every 2 seconds
+    setInterval(fetchStatus, 2000);
+    
+    // Refresh tools every 10 seconds
+    setInterval(fetchTools, 10000);
+}
+
+// Start the dashboard
+init();

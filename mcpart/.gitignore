@@ -1,0 +1,12 @@
+node_modules/
+build/
+.env
+.DS_Store
+*.log
+.vscode/
+
+# Local system fixes (not part of MCP server)
+AUDIO-FIX-README.md
+REAL-FIX-SUMMARY.sh
+nvidia-audio-reset.sh
+quick-audio-fix.sh

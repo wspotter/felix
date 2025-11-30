@@ -1,0 +1,480 @@
+/**
+ * Main application logic for voice agent
+ */
+
+class VoiceAgentApp {
+    constructor() {
+        // WebSocket
+        this.ws = null;
+        this.wsUrl = `ws://${window.location.host}/ws`;
+        
+        // Audio handler
+        this.audioHandler = new AudioHandler();
+        
+        // State
+        this.isConnected = false;
+        this.isListening = false;
+        this.currentState = 'idle';
+        
+        // Settings
+        this.settings = {
+            voice: 'amy',
+            model: 'llama3.2',
+            autoListen: true,
+        };
+        
+        // DOM elements
+        this.elements = {
+            statusDot: document.getElementById('statusDot'),
+            statusText: document.getElementById('statusText'),
+            micButton: document.getElementById('micButton'),
+            conversation: document.getElementById('conversation'),
+            waveformCanvas: document.getElementById('waveformCanvas'),
+            toolsIndicator: document.getElementById('toolsIndicator'),
+            toolName: document.getElementById('toolName'),
+            settingsButton: document.getElementById('settingsButton'),
+            settingsModal: document.getElementById('settingsModal'),
+            closeSettings: document.getElementById('closeSettings'),
+            saveSettings: document.getElementById('saveSettings'),
+            voiceSelect: document.getElementById('voiceSelect'),
+            modelSelect: document.getElementById('modelSelect'),
+            autoListen: document.getElementById('autoListen'),
+        };
+        
+        // Waveform canvas
+        this.canvasCtx = this.elements.waveformCanvas.getContext('2d');
+        
+        // Bind methods
+        this.handleMicClick = this.handleMicClick.bind(this);
+        this.handleWsMessage = this.handleWsMessage.bind(this);
+        this.drawWaveform = this.drawWaveform.bind(this);
+        
+        // Load settings
+        this.loadSettings();
+        
+        // Setup event listeners
+        this.setupEventListeners();
+        
+        // Connect to server
+        this.connect();
+    }
+    
+    setupEventListeners() {
+        // Mic button
+        this.elements.micButton.addEventListener('click', this.handleMicClick);
+        
+        // Settings
+        this.elements.settingsButton.addEventListener('click', () => {
+            this.elements.settingsModal.classList.remove('hidden');
+        });
+        
+        this.elements.closeSettings.addEventListener('click', () => {
+            this.elements.settingsModal.classList.add('hidden');
+        });
+        
+        this.elements.saveSettings.addEventListener('click', () => {
+            this.saveSettings();
+            this.elements.settingsModal.classList.add('hidden');
+        });
+        
+        // Audio callbacks
+        this.audioHandler.onAudioData = (pcmData) => {
+            this.sendAudio(pcmData);
+        };
+        
+        this.audioHandler.onVisualizationData = (data) => {
+            this.drawWaveform(data);
+        };
+        
+        this.audioHandler.onPlaybackEnd = () => {
+            // Tell server we finished playing audio
+            if (this.currentState === 'speaking') {
+                this.send({ type: 'playback_done' });
+            }
+            
+            if (this.settings.autoListen && this.currentState === 'speaking') {
+                // Auto-start listening after response
+                setTimeout(() => {
+                    if (!this.isListening) {
+                        this.startListening();
+                    }
+                }, 500);
+            }
+        };
+        
+        // Keyboard shortcut (spacebar to toggle)
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+                e.preventDefault();
+                this.handleMicClick();
+            }
+        });
+    }
+    
+    loadSettings() {
+        // Valid Piper voices
+        const validVoices = ['amy', 'lessac', 'ryan'];
+        
+        try {
+            const saved = localStorage.getItem('voiceAgentSettings');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                // Validate voice - migrate from old Edge-TTS voices
+                if (parsed.voice && !validVoices.includes(parsed.voice)) {
+                    console.log('Migrating voice from', parsed.voice, 'to amy');
+                    parsed.voice = 'amy';
+                }
+                this.settings = { ...this.settings, ...parsed };
+            }
+        } catch (e) {
+            console.error('Failed to load settings:', e);
+        }
+        
+        // Ensure voice is valid
+        if (!validVoices.includes(this.settings.voice)) {
+            this.settings.voice = 'amy';
+        }
+        
+        // Update UI
+        this.elements.voiceSelect.value = this.settings.voice;
+        this.elements.modelSelect.value = this.settings.model;
+        this.elements.autoListen.checked = this.settings.autoListen;
+        
+        // Save migrated settings
+        localStorage.setItem('voiceAgentSettings', JSON.stringify(this.settings));
+    }
+    
+    saveSettings() {
+        this.settings.voice = this.elements.voiceSelect.value;
+        this.settings.model = this.elements.modelSelect.value;
+        this.settings.autoListen = this.elements.autoListen.checked;
+        
+        localStorage.setItem('voiceAgentSettings', JSON.stringify(this.settings));
+        
+        // Send settings to server
+        if (this.isConnected) {
+            this.send({
+                type: 'settings',
+                voice: this.settings.voice,
+                model: this.settings.model,
+            });
+        }
+    }
+    
+    connect() {
+        this.updateStatus('connecting', 'Connecting...');
+        
+        this.ws = new WebSocket(this.wsUrl);
+        
+        this.ws.onopen = () => {
+            this.isConnected = true;
+            this.updateStatus('connected', 'Connected');
+            this.elements.micButton.disabled = false;
+            
+            // Send initial settings
+            this.send({
+                type: 'settings',
+                voice: this.settings.voice,
+                model: this.settings.model,
+            });
+        };
+        
+        this.ws.onclose = () => {
+            this.isConnected = false;
+            this.updateStatus('disconnected', 'Disconnected');
+            this.elements.micButton.disabled = true;
+            this.stopListening();
+            
+            // Reconnect after delay
+            setTimeout(() => this.connect(), 3000);
+        };
+        
+        this.ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            this.updateStatus('error', 'Connection error');
+        };
+        
+        this.ws.onmessage = this.handleWsMessage;
+    }
+    
+    handleWsMessage(event) {
+        try {
+            // Check if it's binary audio data
+            if (event.data instanceof Blob) {
+                event.data.arrayBuffer().then(buffer => {
+                    this.audioHandler.playAudio(buffer);
+                });
+                return;
+            }
+            
+            // Parse JSON message
+            const message = JSON.parse(event.data);
+            
+            switch (message.type) {
+                case 'state':
+                    this.handleStateChange(message.state);
+                    break;
+                    
+                case 'transcript':
+                    this.addMessage('user', message.text, message.is_final);
+                    break;
+                    
+                case 'response':
+                    this.addMessage('assistant', message.text, true);
+                    break;
+                    
+                case 'response_chunk':
+                    this.updateAssistantMessage(message.text);
+                    break;
+                    
+                case 'tool_call':
+                    this.showToolIndicator(message.tool);
+                    break;
+                    
+                case 'tool_result':
+                    this.hideToolIndicator();
+                    break;
+                    
+                case 'error':
+                    this.showError(message.message);
+                    break;
+                    
+                case 'audio':
+                    // Base64 encoded audio
+                    const audioData = this.base64ToArrayBuffer(message.data);
+                    this.audioHandler.playAudio(audioData);
+                    break;
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
+        }
+    }
+    
+    handleStateChange(state) {
+        this.currentState = state;
+        
+        switch (state) {
+            case 'idle':
+                this.updateStatus('connected', 'Ready');
+                break;
+            case 'listening':
+                this.updateStatus('listening', 'Listening...');
+                break;
+            case 'processing':
+                this.updateStatus('processing', 'Processing...');
+                break;
+            case 'speaking':
+                this.updateStatus('speaking', 'Speaking...');
+                break;
+            case 'interrupted':
+                this.updateStatus('listening', 'Interrupted - Listening...');
+                this.audioHandler.stopPlayback();
+                break;
+        }
+    }
+    
+    handleMicClick() {
+        if (this.isListening) {
+            this.stopListening();
+        } else {
+            this.startListening();
+        }
+    }
+    
+    async startListening() {
+        console.log('startListening called, isConnected:', this.isConnected);
+        if (!this.isConnected) {
+            console.log('Not connected, aborting');
+            return;
+        }
+        
+        try {
+            console.log('Calling audioHandler.startRecording...');
+            await this.audioHandler.startRecording();
+            console.log('Recording started successfully');
+            this.isListening = true;
+            
+            this.elements.micButton.classList.add('active');
+            this.elements.micButton.querySelector('.mic-icon').classList.add('hidden');
+            this.elements.micButton.querySelector('.stop-icon').classList.remove('hidden');
+            
+            this.send({ type: 'start_listening' });
+            
+            // Start visualization loop
+            this.startVisualization();
+        } catch (error) {
+            console.error('Failed to start listening:', error);
+            this.showError('Could not access microphone');
+        }
+    }
+    
+    stopListening() {
+        this.audioHandler.stopRecording();
+        this.isListening = false;
+        
+        this.elements.micButton.classList.remove('active');
+        this.elements.micButton.querySelector('.mic-icon').classList.remove('hidden');
+        this.elements.micButton.querySelector('.stop-icon').classList.add('hidden');
+        
+        this.send({ type: 'stop_listening' });
+        
+        // Stop visualization
+        this.stopVisualization();
+    }
+    
+    sendAudio(pcmData) {
+        if (!this.isConnected || !this.isListening) return;
+        
+        // Create a packet with TTS playing flag
+        // Format: [1 byte flag][audio data]
+        // Flag: 1 = TTS is playing, 0 = not playing
+        const isTTSPlaying = this.audioHandler.isPlaying ? 1 : 0;
+        const packet = new Uint8Array(1 + pcmData.buffer.byteLength);
+        packet[0] = isTTSPlaying;
+        packet.set(new Uint8Array(pcmData.buffer), 1);
+        
+        this.ws.send(packet.buffer);
+    }
+    
+    send(data) {
+        if (!this.isConnected) {
+            console.log('Cannot send - not connected');
+            return;
+        }
+        console.log('Sending:', data);
+        this.ws.send(JSON.stringify(data));
+    }
+    
+    addMessage(role, text, isFinal = true) {
+        const conversation = this.elements.conversation;
+        
+        // Check for existing interim message
+        let messageEl = conversation.querySelector(`.message.${role}.interim`);
+        
+        if (messageEl && isFinal) {
+            messageEl.classList.remove('interim');
+            messageEl.querySelector('p').textContent = text;
+        } else if (!messageEl) {
+            messageEl = document.createElement('div');
+            messageEl.className = `message ${role}${isFinal ? '' : ' interim'}`;
+            messageEl.innerHTML = `<p>${this.escapeHtml(text)}</p>`;
+            conversation.appendChild(messageEl);
+        } else {
+            messageEl.querySelector('p').textContent = text;
+        }
+        
+        // Scroll to bottom
+        conversation.scrollTop = conversation.scrollHeight;
+    }
+    
+    updateAssistantMessage(text) {
+        const conversation = this.elements.conversation;
+        let messageEl = conversation.querySelector('.message.assistant.streaming');
+        
+        if (!messageEl) {
+            messageEl = document.createElement('div');
+            messageEl.className = 'message assistant streaming';
+            messageEl.innerHTML = '<p></p>';
+            conversation.appendChild(messageEl);
+        }
+        
+        messageEl.querySelector('p').textContent = text;
+        conversation.scrollTop = conversation.scrollHeight;
+    }
+    
+    showToolIndicator(toolName) {
+        this.elements.toolName.textContent = toolName;
+        this.elements.toolsIndicator.classList.remove('hidden');
+    }
+    
+    hideToolIndicator() {
+        this.elements.toolsIndicator.classList.add('hidden');
+    }
+    
+    showError(message) {
+        console.error('Error:', message);
+        this.addMessage('system', `Error: ${message}`, true);
+    }
+    
+    updateStatus(status, text) {
+        this.elements.statusDot.className = `status-dot ${status}`;
+        this.elements.statusText.textContent = text;
+    }
+    
+    startVisualization() {
+        if (this.visualizationFrame) return;
+        
+        const draw = () => {
+            const data = this.audioHandler.getVisualizationData();
+            if (data) {
+                this.drawWaveform(data);
+            }
+            this.visualizationFrame = requestAnimationFrame(draw);
+        };
+        
+        draw();
+    }
+    
+    stopVisualization() {
+        if (this.visualizationFrame) {
+            cancelAnimationFrame(this.visualizationFrame);
+            this.visualizationFrame = null;
+        }
+        
+        // Clear canvas
+        this.canvasCtx.clearRect(0, 0, this.elements.waveformCanvas.width, this.elements.waveformCanvas.height);
+    }
+    
+    drawWaveform(dataArray) {
+        const canvas = this.elements.waveformCanvas;
+        const ctx = this.canvasCtx;
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        ctx.fillStyle = 'rgb(26, 27, 30)';
+        ctx.fillRect(0, 0, width, height);
+        
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = this.isListening ? '#4CAF50' : '#666';
+        ctx.beginPath();
+        
+        const sliceWidth = width / dataArray.length;
+        let x = 0;
+        
+        for (let i = 0; i < dataArray.length; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * height / 2;
+            
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+            
+            x += sliceWidth;
+        }
+        
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    base64ToArrayBuffer(base64) {
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+}
+
+// Initialize app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new VoiceAgentApp();
+});
