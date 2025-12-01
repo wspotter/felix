@@ -11,6 +11,7 @@ export const AVATAR_STATES = {
     LISTENING: 'listening',
     THINKING: 'thinking',
     SPEAKING: 'speaking',
+    GROOVING: 'grooving',  // Music playing state
 };
 
 // Avatar expression constants
@@ -79,6 +80,10 @@ export function setAvatarState(state) {
     switch (state) {
         case AVATAR_STATES.IDLE:
             startIdleAnimations();
+            break;
+        case AVATAR_STATES.GROOVING:
+            // Keep some idle animations for grooving but with music vibe
+            stopIdleAnimations();
             break;
         case AVATAR_STATES.LISTENING:
         case AVATAR_STATES.THINKING:

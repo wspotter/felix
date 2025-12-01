@@ -163,7 +163,7 @@ def _get_index_and_docs(dataset_name: str) -> tuple[Any, list, str]:
 
 
 @tool_registry.register(
-    description="Search local knowledge base for Cherry Studio docs, guides, and technical information. Call this for ANY question about Cherry Studio.",
+    description="PRIORITY TOOL: Search local knowledge bases FIRST before web_search. Contains test-facts, documentation, and local information that web_search cannot find. Always try this tool first for factual questions.",
     category="knowledge",
     parameters={
         "type": "object",
@@ -174,7 +174,7 @@ def _get_index_and_docs(dataset_name: str) -> tuple[Any, list, str]:
             },
             "dataset": {
                 "type": "string",
-                "description": "Optional: specific dataset to search ('cherry-studio-docs' or 'sample-docs'). Omit to search all."
+                "description": "Optional: specific dataset to search ('test-facts', 'cherry-studio-docs', or 'sample-docs'). Omit to search all."
             },
             "num_results": {
                 "type": "integer",

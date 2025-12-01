@@ -19,7 +19,7 @@ class FlyoutResult:
 
 
 @tool_registry.register(
-    description="Search the web for information",
+    description="FALLBACK: Search the web using DuckDuckGo. Only use this if knowledge_search returns no results.",
 )
 async def web_search(
     query: str,

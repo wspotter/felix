@@ -28,28 +28,77 @@ def extract_json_tool_calls(text: str) -> list[dict]:
     """
     tool_calls = []
     
-    # Pattern 1: {"name": "tool_name", "arguments": {...}}
-    json_pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}'
+    # Pattern 1: {"name": "tool_name", "arguments": {...}} - flexible nested braces
+    # This handles cases where arguments might have nested objects
+    json_pattern = r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\}'
     
-    for match in re.finditer(json_pattern, text):
+    for match in re.finditer(json_pattern, text, re.DOTALL):
         try:
-            full_match = match.group(0)
-            parsed = json.loads(full_match)
-            if "name" in parsed and "arguments" in parsed:
-                tool_calls.append(parsed)
-        except json.JSONDecodeError:
+            name = match.group(1)
+            args_str = match.group(2)
+            args = json.loads(args_str)
+            tool_calls.append({"name": name, "arguments": args})
+            logger.debug("extracted_tool_call_pattern1", name=name, args=args)
+        except json.JSONDecodeError as e:
+            logger.debug("tool_call_parse_failed_pattern1", error=str(e))
             continue
     
-    # Pattern 2: Look for function call patterns like tool_name(arg=value)
-    # or explicit JSON blocks in code fences
-    code_block_pattern = r'```(?:json)?\s*(\{[^`]+\})\s*```'
-    for match in re.finditer(code_block_pattern, text, re.DOTALL):
+    # Pattern 2: Try to find and parse any JSON object with name and arguments/parameters
+    if not tool_calls:
+        # More aggressive pattern - find any JSON-like structure
+        json_block_pattern = r'\{[^{}]*"name"[^{}]*\}'
+        for match in re.finditer(json_block_pattern, text):
+            try:
+                parsed = json.loads(match.group(0))
+                if "name" in parsed and ("arguments" in parsed or "parameters" in parsed):
+                    args = parsed.get("arguments", parsed.get("parameters", {}))
+                    tool_calls.append({"name": parsed["name"], "arguments": args})
+                    logger.debug("extracted_tool_call_pattern2", name=parsed["name"])
+            except json.JSONDecodeError:
+                continue
+    
+    # Pattern 3: Look for JSON blocks in code fences
+    if not tool_calls:
+        code_block_pattern = r'```(?:json)?\s*(\{[^`]+\})\s*```'
+        for match in re.finditer(code_block_pattern, text, re.DOTALL):
+            try:
+                parsed = json.loads(match.group(1))
+                if "name" in parsed and ("arguments" in parsed or "parameters" in parsed):
+                    args = parsed.get("arguments", parsed.get("parameters", {}))
+                    tool_calls.append({"name": parsed["name"], "arguments": args})
+                    logger.debug("extracted_tool_call_pattern3", name=parsed["name"])
+            except json.JSONDecodeError:
+                continue
+    
+    # Pattern 4: Try to reconstruct from fragmented JSON (llama3.2 specific)
+    # Look for patterns like: {"name": "web_search", "arguments": {"query": "..."}}
+    if not tool_calls and '"name"' in text and ('"arguments"' in text or '"parameters"' in text):
+        # Try to extract the whole thing as one JSON
         try:
-            parsed = json.loads(match.group(1))
-            if "name" in parsed and "arguments" in parsed:
-                tool_calls.append(parsed)
-        except json.JSONDecodeError:
-            continue
+            # Find the start and end of what looks like a tool call
+            start_idx = text.find('{')
+            if start_idx >= 0:
+                # Count braces to find matching end
+                depth = 0
+                end_idx = start_idx
+                for i, c in enumerate(text[start_idx:], start_idx):
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end_idx = i + 1
+                            break
+                
+                if end_idx > start_idx:
+                    json_str = text[start_idx:end_idx]
+                    parsed = json.loads(json_str)
+                    if "name" in parsed and ("arguments" in parsed or "parameters" in parsed):
+                        args = parsed.get("arguments", parsed.get("parameters", {}))
+                        tool_calls.append({"name": parsed["name"], "arguments": args})
+                        logger.debug("extracted_tool_call_pattern4", name=parsed["name"])
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.debug("tool_call_parse_failed_pattern4", error=str(e))
     
     return tool_calls
 
@@ -377,6 +426,10 @@ class LLMClient:
                 if self.backend == "ollama" and "message" in data:
                     message = data["message"]
                     
+                    # Log raw message for debugging tool call issues
+                    if "tool_calls" in message or logger.isEnabledFor(10):  # DEBUG level
+                        logger.debug("ollama_raw_message", message=message, done=data.get("done", False))
+                    
                     # Text content - buffer it first
                     content = message.get("content", "")
                     if content:
@@ -385,10 +438,13 @@ class LLMClient:
                     
                     # Tool calls (usually in final message)
                     if "tool_calls" in message:
-                        tool_calls.extend(message["tool_calls"])
+                        raw_tool_calls = message["tool_calls"]
+                        logger.info("ollama_tool_calls_received", count=len(raw_tool_calls), tool_calls=raw_tool_calls)
+                        tool_calls.extend(raw_tool_calls)
                     
                     # Check if done (Ollama format)
                     if data.get("done", False):
+                        logger.info("ollama_stream_done", accumulated_content_length=len(accumulated_content), tool_calls_count=len(tool_calls))
                         break
                         
                 elif "choices" in data:
@@ -442,6 +498,93 @@ class LLMClient:
         # After streaming completes, decide what to yield
         # If we got tool calls via API, DON'T yield the text content
         # (llama3.2 sometimes outputs partial JSON in content when using tools)
+        
+        # Check if any API tool calls have empty/invalid arguments
+        # If so, try to extract from text content instead
+        valid_tool_calls = []
+        needs_text_extraction = False
+        fragmented_json_parts = []  # Collect JSON fragments from malformed tool calls
+        main_tool_name = None  # Track the tool name from the first valid-looking call
+        
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            tool_name = func.get("name", "")
+            args = func.get("arguments", {})
+            
+            # If this looks like a real tool name, remember it
+            if tool_name and tool_name in self._tool_handlers:
+                main_tool_name = tool_name
+            
+            # Check if arguments are actually useful
+            if isinstance(args, str) and args.strip():
+                try:
+                    parsed = json.loads(args)
+                    if parsed:  # Non-empty dict
+                        valid_tool_calls.append(tc)
+                        continue
+                except json.JSONDecodeError:
+                    # This might be a JSON fragment - collect it
+                    fragmented_json_parts.append(args)
+            elif isinstance(args, dict) and args:  # Non-empty dict
+                valid_tool_calls.append(tc)
+                continue
+            else:
+                # Empty args - this is a fragment, collect the args string if any
+                if isinstance(args, str):
+                    fragmented_json_parts.append(args)
+                    
+            # If we get here, tool call has empty/invalid args
+            needs_text_extraction = True
+            logger.debug("tool_call_empty_args", tool=tool_name, args=args)
+        
+        # Try to reconstruct tool call from fragments
+        if needs_text_extraction and fragmented_json_parts and main_tool_name:
+            reconstructed = "".join(fragmented_json_parts)
+            logger.info("attempting_fragment_reconstruction", tool=main_tool_name, fragments=len(fragmented_json_parts), reconstructed=reconstructed[:200])
+            
+            # Try to parse the reconstructed JSON
+            try:
+                parsed_args = json.loads(reconstructed)
+                if parsed_args:
+                    valid_tool_calls = [{"function": {"name": main_tool_name, "arguments": parsed_args}}]
+                    logger.info("reconstructed_tool_call", tool=main_tool_name, args=parsed_args)
+                    needs_text_extraction = False
+            except json.JSONDecodeError as e:
+                # Try to fix common issues with incomplete JSON
+                fixed = reconstructed
+                
+                # Remove trailing incomplete key-value pairs like ', "key": }' or ', "key": }'
+                import re
+                # Pattern: comma followed by incomplete field (key with no value or empty value)
+                fixed = re.sub(r',\s*"[^"]+"\s*:\s*\}$', '}', fixed)
+                fixed = re.sub(r',\s*"[^"]+"\s*:\s*$', '', fixed)
+                
+                # Try to close unclosed braces
+                open_braces = fixed.count('{') - fixed.count('}')
+                if open_braces > 0:
+                    fixed = fixed.rstrip() + '}' * open_braces
+                
+                logger.debug("attempting_json_fix", original=reconstructed[:100], fixed=fixed[:100])
+                
+                try:
+                    parsed_args = json.loads(fixed)
+                    if parsed_args:
+                        valid_tool_calls = [{"function": {"name": main_tool_name, "arguments": parsed_args}}]
+                        logger.info("reconstructed_tool_call_fixed", tool=main_tool_name, args=parsed_args)
+                        needs_text_extraction = False
+                except json.JSONDecodeError as e2:
+                    logger.warning("fragment_reconstruction_failed", error=str(e), reconstructed=reconstructed[:200])
+        
+        # If any tool calls had empty args, try text extraction from accumulated content
+        if needs_text_extraction and accumulated_content and self._tools:
+            logger.info("trying_text_extraction", content_length=len(accumulated_content), content_preview=accumulated_content[:200])
+            text_tool_calls = extract_json_tool_calls(accumulated_content)
+            if text_tool_calls:
+                valid_tool_calls = [{"function": {"name": tc["name"], "arguments": tc.get("arguments", {})}} for tc in text_tool_calls]
+                logger.info("text_tool_calls_extracted_fallback", count=len(valid_tool_calls))
+        
+        tool_calls = valid_tool_calls
+        
         if not tool_calls:
             # No API tool calls - yield the accumulated text
             # First check if it looks like tool call JSON that we should parse
@@ -466,14 +609,48 @@ class LLMClient:
             tool_args = func.get("arguments", {})
             tool_call_id = tool_call.get("id", f"call_{tool_name}")
             
+            # Skip invalid tool calls (empty name or not a recognized tool)
+            if not tool_name or tool_name not in self._tool_handlers:
+                logger.debug("skipping_invalid_tool_call", name=tool_name, has_handler=tool_name in self._tool_handlers)
+                continue
+            
             # Parse arguments if they're a JSON string (common with Qwen3, LM Studio)
             if isinstance(tool_args, str):
                 try:
                     tool_args = json.loads(tool_args)
                     logger.debug("parsed_string_tool_args", tool=tool_name, args=tool_args)
                 except json.JSONDecodeError as e:
-                    logger.error("tool_args_parse_error", tool=tool_name, args=tool_args, error=str(e))
-                    tool_args = {}
+                    logger.warning("tool_args_parse_error", tool=tool_name, args=tool_args, error=str(e))
+                    # Try to use text extraction as fallback for this specific tool
+                    if accumulated_content:
+                        text_calls = extract_json_tool_calls(accumulated_content)
+                        for tc in text_calls:
+                            if tc.get("name") == tool_name:
+                                tool_args = tc.get("arguments", {})
+                                logger.info("recovered_args_from_text", tool=tool_name, args=tool_args)
+                                break
+                        else:
+                            tool_args = {}
+                    else:
+                        tool_args = {}
+            
+            # Skip if still no valid arguments for tools that require them
+            if not tool_args:
+                # Check if the tool has required parameters
+                tool = None
+                for t in self._tools:
+                    if t.get("function", {}).get("name") == tool_name:
+                        tool = t
+                        break
+                
+                if tool:
+                    params = tool.get("function", {}).get("parameters", {})
+                    required = params.get("required", [])
+                    if required:
+                        logger.warning("skipping_tool_missing_required_args", tool=tool_name, required=required)
+                        continue
+            
+            logger.info("executing_tool_call", tool=tool_name, args=tool_args)
             
             yield {
                 "type": "tool_call",
@@ -482,27 +659,26 @@ class LLMClient:
                 "arguments": tool_args
             }
             
-            # Execute tool if handler exists
-            if tool_name in self._tool_handlers:
-                try:
-                    handler = self._tool_handlers[tool_name]
-                    if asyncio.iscoroutinefunction(handler):
-                        result = await handler(**tool_args)
-                    else:
-                        result = handler(**tool_args)
-                    
-                    yield {
-                        "type": "tool_result",
-                        "name": tool_name,
-                        "result": str(result)
-                    }
-                except Exception as e:
-                    logger.error("tool_execution_error", tool=tool_name, error=str(e))
-                    yield {
-                        "type": "tool_result",
-                        "name": tool_name,
-                        "result": f"Error: {str(e)}"
-                    }
+            # Execute tool
+            try:
+                handler = self._tool_handlers[tool_name]
+                if asyncio.iscoroutinefunction(handler):
+                    result = await handler(**tool_args)
+                else:
+                    result = handler(**tool_args)
+                
+                yield {
+                    "type": "tool_result",
+                    "name": tool_name,
+                    "result": str(result)
+                }
+            except Exception as e:
+                logger.error("tool_execution_error", tool=tool_name, error=str(e))
+                yield {
+                    "type": "tool_result",
+                    "name": tool_name,
+                    "result": f"Error: {str(e)}"
+                }
         
     async def generate_response(
         self,

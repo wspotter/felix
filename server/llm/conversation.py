@@ -52,14 +52,31 @@ RESPONSE RULES:
 - Use natural speech patterns without markdown or special formatting
 - Don't use abbreviations like "e.g." - say "for example" instead
 
-TOOL USAGE - USE TOOLS WHEN APPROPRIATE:
-- For questions about Cherry Studio: call knowledge_search tool
-- For questions about documentation or guides: call knowledge_search tool  
-- For time/date questions: call the appropriate time tool
-- For weather questions: call weather tools
-- After getting tool results, summarize them naturally for speech
+CRITICAL TOOL PRIORITY ORDER:
+When you need to find information, ALWAYS try tools in this order:
 
-If you cannot help, explain politely in plain language."""
+1. FIRST: knowledge_search - Search local knowledge bases BEFORE web search!
+   - Call: knowledge_search(query="your question")
+   - Contains: test-facts, cherry-studio-docs, sample-docs
+   - Has local documents with information you need
+   - Example: knowledge_search(query="mayor of Willowbrook")
+
+2. SECOND: If knowledge_search returns no results, THEN try web_search
+   - Only use web_search as a fallback
+
+3. For time/date → get_current_time, get_current_date, calculate_date
+4. For weather → get_weather, get_forecast
+5. For system info → get_system_info, get_resource_usage
+
+DISCOVERING TOOLS:
+- Call list_available_tools() to see all available tools
+- Call get_tool_help("tool_name") for detailed usage instructions
+
+AFTER TOOL RESULTS:
+- Summarize results naturally for speech
+- Don't read raw JSON - interpret and explain
+
+IMPORTANT: Use knowledge_search FIRST for any factual questions. It contains local information that web_search cannot find!"""
     
     def add_user_message(self, content: str) -> None:
         """Add a user message."""

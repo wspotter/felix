@@ -482,6 +482,177 @@ async def process_audio_pipeline(
         session.set_state(SessionState.IDLE)
 
 
+async def process_text_message(
+    client_id: str,
+    text: str,
+    session: Session,
+    voice: str,
+    model: str,
+    voice_speed: float = 1.0,
+):
+    """Process text message through the LLM pipeline (same as audio but skips STT)."""
+    try:
+        async with session._processing_lock:
+            logger.info("processing_text_message", text=text[:100], client_id=client_id)
+            
+            # Start pipeline trace
+            tracer = get_tracer()
+            with tracer.start_as_current_span("voice.text_pipeline") as pipeline_span:
+                pipeline_span.set_attribute("client_id", client_id)
+                pipeline_span.set_attribute("text_length", len(text))
+                
+                # Add to conversation history
+                session.conversation_history.add_user_message(text)
+                
+                # Get LLM client
+                ollama = await get_llm_client()
+                ollama.model = model
+                
+                # Register tools
+                ollama.clear_tools()
+                for tool in tool_registry.list_tools():
+                    ollama.register_tool(
+                        tool.name,
+                        tool.description,
+                        tool.parameters,
+                        tool.handler
+                    )
+                
+                full_response = ""
+                
+                try:
+                    with start_llm_span(model, len(session.conversation_history.get_messages()), bool(tool_registry.list_tools())) as llm_span:
+                        async for chunk in ollama.chat(
+                            session.conversation_history.get_messages()
+                        ):
+                            if chunk["type"] == "text":
+                                full_response += chunk["content"]
+                                await manager.send_json(client_id, {
+                                    "type": "response_chunk",
+                                    "text": full_response
+                                })
+                            
+                            elif chunk["type"] == "tool_call":
+                                tool_call_id = chunk.get("id", f"call_{chunk['name']}")
+                                tool_name = chunk["name"]
+                                arguments = chunk["arguments"]
+                                
+                                logger.info("tool_call_received", tool=tool_name, args=arguments)
+                                
+                                await manager.send_json(client_id, {
+                                    "type": "tool_call",
+                                    "tool": tool_name
+                                })
+                                
+                                # Execute tool with tracing
+                                with start_tool_span(tool_name, arguments) as tool_span:
+                                    result = await tool_executor.execute(tool_name, arguments)
+                                    tool_span.set_attribute("success", result.success)
+                                
+                                # Handle structured results with flyout data
+                                result_text = ""
+                                if result.success:
+                                    if isinstance(result.result, dict):
+                                        result_text = result.result.get("text", str(result.result))
+                                        flyout_data = result.result.get("flyout")
+                                        if flyout_data:
+                                            await manager.send_json(client_id, {
+                                                "type": "flyout",
+                                                "flyout_type": flyout_data.get("type"),
+                                                "content": flyout_data.get("content")
+                                            })
+                                    else:
+                                        result_text = str(result.result)
+                                else:
+                                    result_text = result.error
+                                
+                                await manager.send_json(client_id, {
+                                    "type": "tool_result",
+                                    "tool": tool_name,
+                                    "result": result_text
+                                })
+                                
+                                if result.success:
+                                    session.conversation_history.add_tool_result(
+                                        tool_call_id, tool_name, result_text
+                                    )
+                        
+                        llm_span.set_attribute("response_length", len(full_response))
+                        
+                        # Get follow-up response after tool execution if needed
+                        if not full_response and session.conversation_history.get_messages():
+                            last_msg = session.conversation_history.get_messages()[-1]
+                            if last_msg.get("role") == "tool":
+                                async for chunk in ollama.chat(
+                                    session.conversation_history.get_messages()
+                                ):
+                                    if chunk["type"] == "text":
+                                        full_response += chunk["content"]
+                                        await manager.send_json(client_id, {
+                                            "type": "response_chunk",
+                                            "text": full_response
+                                        })
+                
+                except Exception as llm_error:
+                    error_msg = str(llm_error)
+                    logger.error("LLM error", error=error_msg, model=model)
+                    await manager.send_json(client_id, {
+                        "type": "error",
+                        "message": f"LLM error: {error_msg[:100]}"
+                    })
+                    session.set_state(SessionState.LISTENING)
+                    await manager.send_json(client_id, {"type": "state", "state": "listening"})
+                    return
+                
+                if not full_response:
+                    session.set_state(SessionState.LISTENING)
+                    await manager.send_json(client_id, {"type": "state", "state": "listening"})
+                    return
+                
+                # Add assistant response to history
+                session.conversation_history.add_assistant_message(full_response)
+                
+                # Send final response
+                await manager.send_json(client_id, {
+                    "type": "response",
+                    "text": full_response
+                })
+                
+                # Synthesize speech using Piper (local)
+                session.set_state(SessionState.SPEAKING)
+                await manager.send_json(client_id, {"type": "state", "state": "speaking"})
+                
+                with start_tts_span(len(full_response), voice) as tts_span:
+                    tts = get_tts(voice)
+                    tts.speaking_rate = voice_speed
+                    
+                    audio_chunks_sent = 0
+                    async for audio_chunk in tts.synthesize_streaming(full_response):
+                        if session.should_stop():
+                            logger.info("TTS interrupted", client_id=client_id)
+                            tts_span.set_attribute("interrupted", True)
+                            tts.cancel()
+                            break
+                        
+                        audio_chunks_sent += 1
+                        await manager.send_json(client_id, {
+                            "type": "audio",
+                            "data": base64.b64encode(audio_chunk).decode('utf-8')
+                        })
+                    
+                    tts_span.set_attribute("audio_chunks", audio_chunks_sent)
+                
+                logger.info("Text message processed, audio sent", client_id=client_id)
+        
+    except Exception as e:
+        logger.error("Text pipeline error", error=str(e), client_id=client_id)
+        await manager.send_json(client_id, {
+            "type": "error",
+            "message": str(e)
+        })
+        session.set_state(SessionState.IDLE)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time audio communication."""
@@ -653,6 +824,56 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Clear conversation history
                         session.conversation_history.clear()
                         logger.info("Conversation cleared", client_id=client_id)
+                    
+                    elif msg_type == "text_message":
+                        # Handle text input from chat box
+                        text = data.get("text", "").strip()
+                        if text:
+                            logger.info("text_message_received", text=text[:100], client_id=client_id)
+                            
+                            # Set state to processing
+                            session.set_state(SessionState.PROCESSING)
+                            await manager.send_json(client_id, {
+                                "type": "state",
+                                "state": "processing"
+                            })
+                            
+                            # Process the text message through LLM pipeline
+                            asyncio.create_task(
+                                process_text_message(
+                                    client_id, text, session,
+                                    voice, model, voice_speed
+                                )
+                            )
+                    
+                    elif msg_type == "music_command":
+                        # Handle direct music commands from UI
+                        command = data.get("command", "")
+                        params = data.get("params", {})
+                        
+                        if command and command.startswith("music_"):
+                            try:
+                                # Execute the music tool directly
+                                from server.tools.registry import tool_registry
+                                
+                                tool = tool_registry.get_tool(command)
+                                if tool:
+                                    result = await tool["function"](**params)
+                                    
+                                    # Send music state update back
+                                    if isinstance(result, dict):
+                                        await manager.send_json(client_id, {
+                                            "type": "music_state",
+                                            **result
+                                        })
+                                    elif isinstance(result, str):
+                                        # Parse status string if needed
+                                        await manager.send_json(client_id, {
+                                            "type": "music_state",
+                                            "text": result
+                                        })
+                            except Exception as e:
+                                logger.error("music_command_error", error=str(e), command=command)
                     
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON", client_id=client_id)

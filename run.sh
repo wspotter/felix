@@ -63,6 +63,56 @@ else
     fi
 fi
 
+# Check for OpenMemory backend
+OPENMEMORY_DIR="/home/stacy/openmemory"
+echo -e "${BLUE}Checking OpenMemory...${NC}"
+if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ OpenMemory is running${NC}"
+else
+    echo -e "${YELLOW}Starting OpenMemory backend...${NC}"
+    if [ -d "$OPENMEMORY_DIR/backend" ]; then
+        cd "$OPENMEMORY_DIR/backend"
+        nohup npx tsx src/server/index.ts > "$OPENMEMORY_DIR/openmemory.log" 2>&1 &
+        cd "$SCRIPT_DIR"
+        sleep 3
+        if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ OpenMemory started${NC}"
+        else
+            echo -e "${YELLOW}⚠ OpenMemory failed to start (memory tools will be unavailable)${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ OpenMemory not found at $OPENMEMORY_DIR (memory tools will be unavailable)${NC}"
+    fi
+fi
+
+# Check for MPD (Music Player Daemon)
+echo -e "${BLUE}Checking MPD...${NC}"
+if systemctl --user is-active mpd > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ MPD is running${NC}"
+elif mpc status > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ MPD is running${NC}"
+else
+    echo -e "${YELLOW}Starting MPD...${NC}"
+    if command -v mpd &> /dev/null; then
+        # Try user service first
+        if systemctl --user start mpd 2>/dev/null; then
+            echo -e "${GREEN}✓ MPD started (user service)${NC}"
+        else
+            # Try starting directly
+            mpd 2>/dev/null || true
+            sleep 1
+            if mpc status > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ MPD started${NC}"
+            else
+                echo -e "${YELLOW}⚠ MPD failed to start (music tools will be unavailable)${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}⚠ MPD not installed (music tools will be unavailable)${NC}"
+        echo -e "${YELLOW}  Install with: sudo apt install mpd mpc${NC}"
+    fi
+fi
+
 # Check for required model
 MODEL=${OLLAMA_MODEL:-llama3.2}
 echo -e "${BLUE}Checking for model: $MODEL${NC}"

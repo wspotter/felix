@@ -9,6 +9,16 @@ import { loadSettings, saveSettings, getSetting, getAllSettings } from './settin
 import { initTheme, applyTheme, nextTheme, prevTheme, updateThemeSwatches } from './theme.js';
 import { initAvatar, setAvatarState, setInterrupted, AVATAR_STATES } from './avatar.js';
 import { initNotifications, showError, showSuccess, showInfo } from './notifications.js';
+import { initRadialMenu } from './radial-menu.js';
+import { 
+    initMusicPlayer, 
+    updateMusicState, 
+    handleMusicToolResult, 
+    duckVolume, 
+    restoreVolume,
+    isMusicPlaying,
+    startStatusPolling 
+} from './music.js';
 
 class VoiceAgentApp {
     constructor() {
@@ -26,6 +36,7 @@ class VoiceAgentApp {
         this.isConnected = false;
         this.isListening = false;
         this.currentState = 'idle';
+        this.isMuted = false;
         
         // DOM elements cache
         this.elements = {};
@@ -36,6 +47,10 @@ class VoiceAgentApp {
         // Visualization
         this.visualizationFrame = null;
         this.canvasCtx = null;
+        
+        // Conversation history
+        this.conversationHistory = [];
+        this.attachedFiles = [];
         
         // Initialize
         this.init();
@@ -52,6 +67,8 @@ class VoiceAgentApp {
         initNotifications();
         initTheme();
         initAvatar(document.getElementById('avatar'));
+        initMusicPlayer((data) => this.send(data));  // Pass WebSocket send function
+        initRadialMenu((data) => this.send(data));   // Pass WebSocket send function
         
         // Setup canvas
         if (this.elements.waveformCanvas) {
@@ -133,6 +150,20 @@ class VoiceAgentApp {
             
             // Test audio button
             testAudioBtn: document.getElementById('testAudioBtn'),
+            
+            // Chat input elements
+            textInput: document.getElementById('textInput'),
+            sendBtn: document.getElementById('sendBtn'),
+            attachmentBtn: document.getElementById('attachmentBtn'),
+            fileInput: document.getElementById('fileInput'),
+            charCounter: document.getElementById('charCounter'),
+            muteBtn: document.getElementById('muteBtn'),
+            
+            // History flyout
+            historyPanel: document.getElementById('historyPanel'),
+            historyList: document.getElementById('historyList'),
+            exportHistory: document.getElementById('exportHistory'),
+            clearHistoryBtn: document.getElementById('clearHistory'),
         };
     }
     
@@ -219,6 +250,37 @@ class VoiceAgentApp {
         this.elements.backendSelect?.addEventListener('change', (e) => {
             this.updateBackendVisibility(e.target.value);
         });
+        
+        // Text input handling
+        this.elements.textInput?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendTextMessage();
+            }
+        });
+        
+        this.elements.textInput?.addEventListener('input', () => {
+            this.updateCharCounter();
+            this.autoResizeTextInput();
+        });
+        
+        this.elements.sendBtn?.addEventListener('click', () => this.sendTextMessage());
+        
+        // Attachment handling
+        this.elements.attachmentBtn?.addEventListener('click', () => {
+            this.elements.fileInput?.click();
+        });
+        
+        this.elements.fileInput?.addEventListener('change', (e) => {
+            this.handleFileAttachment(e.target.files);
+        });
+        
+        // Mute button
+        this.elements.muteBtn?.addEventListener('click', () => this.toggleMute());
+        
+        // History flyout buttons
+        this.elements.exportHistory?.addEventListener('click', () => this.exportConversationHistory());
+        this.elements.clearHistoryBtn?.addEventListener('click', () => this.clearConversationHistory());
         
         // Audio callbacks
         this.audioHandler.onAudioData = (pcmData) => this.sendAudio(pcmData);
@@ -441,6 +503,9 @@ class VoiceAgentApp {
                     openaiUrl: settings.openaiUrl,
                     openaiApiKey: settings.openaiApiKey,
                 });
+                
+                // Start music status polling
+                startStatusPolling(5000);
             };
             
             this.ws.onclose = () => {
@@ -508,6 +573,14 @@ class VoiceAgentApp {
                     break;
                 case 'tool_result':
                     this.hideToolIndicator();
+                    // Check if this is a music tool result
+                    if (message.tool && message.tool.startsWith('music_')) {
+                        handleMusicToolResult(message.result);
+                    }
+                    break;
+                case 'music_state':
+                    // Handle music state updates from server
+                    updateMusicState(message);
                     break;
                 case 'flyout':
                     this.showInFlyout(message.flyout_type, message.content);
@@ -546,7 +619,13 @@ class VoiceAgentApp {
         switch (state) {
             case 'idle':
                 this.updateStatus('connected', 'Ready');
-                setAvatarState(AVATAR_STATES.IDLE);
+                // Restore music volume when returning to idle
+                if (isMusicPlaying()) {
+                    restoreVolume();
+                    setAvatarState(AVATAR_STATES.GROOVING);
+                } else {
+                    setAvatarState(AVATAR_STATES.IDLE);
+                }
                 break;
             case 'listening':
                 this.updateStatus('listening', 'Listening...');
@@ -563,6 +642,10 @@ class VoiceAgentApp {
                 this.updateStatus('speaking', 'Speaking...');
                 orb?.classList.add('speaking');
                 setAvatarState(AVATAR_STATES.SPEAKING);
+                // Duck music volume when Felix speaks
+                if (isMusicPlaying()) {
+                    duckVolume(20);  // Duck to 20%
+                }
                 // BARGE-IN: Ensure recording continues during TTS playback
                 // so we can detect user interrupts
                 if (!this.audioHandler.isRecording) {
@@ -577,6 +660,10 @@ class VoiceAgentApp {
                 this.audioHandler.stopPlayback();
                 orb?.classList.add('active');
                 setInterrupted();
+                // Restore music volume on interrupt
+                if (isMusicPlaying()) {
+                    restoreVolume();
+                }
                 break;
         }
     }
@@ -764,11 +851,19 @@ class VoiceAgentApp {
         if (messageEl && isFinal) {
             messageEl.classList.remove('interim');
             messageEl.querySelector('p').textContent = text;
+            // Add to history when finalized
+            if (role !== 'system') {
+                this.addToHistory(role, text);
+            }
         } else if (!messageEl) {
             messageEl = document.createElement('div');
             messageEl.className = `message ${role}${isFinal ? '' : ' interim'}`;
             messageEl.innerHTML = `<p>${escapeHtml(text)}</p>`;
             conversation.appendChild(messageEl);
+            // Add to history if final and not system
+            if (isFinal && role !== 'system') {
+                this.addToHistory(role, text);
+            }
         } else {
             messageEl.querySelector('p').textContent = text;
         }
@@ -815,6 +910,11 @@ class VoiceAgentApp {
             conversation.appendChild(messageEl);
         }
         
+        // Add to history
+        if (cleanedText) {
+            this.addToHistory('assistant', cleanedText);
+        }
+        
         conversation.scrollTop = conversation.scrollHeight;
     }
     
@@ -858,6 +958,7 @@ class VoiceAgentApp {
             code: { title: 'Code Editor', icon: 'code', showUrlBar: false },
             terminal: { title: 'Terminal', icon: 'terminal', showUrlBar: false },
             preview: { title: 'Preview', icon: 'preview', showUrlBar: true },
+            history: { title: 'Conversation History', icon: 'history', showUrlBar: false },
         };
         
         const config = configs[type];
@@ -884,6 +985,14 @@ class VoiceAgentApp {
         const content = this.elements.flyoutContent;
         if (!content) return;
         
+        // Hide history panel by default
+        const historyPanel = document.getElementById('historyPanel');
+        if (historyPanel) historyPanel.style.display = 'none';
+        
+        // Hide iframe by default
+        const iframe = content.querySelector('iframe');
+        if (iframe) iframe.style.display = 'none';
+        
         switch (type) {
             case 'browser':
             case 'preview':
@@ -906,6 +1015,13 @@ class VoiceAgentApp {
                         <div><span class="prompt">$</span> <span class="output">Terminal ready...</span></div>
                     </div>
                 `;
+                break;
+            case 'history':
+                // Use the existing history panel from HTML
+                if (historyPanel) {
+                    historyPanel.style.display = 'block';
+                    this.renderHistoryPanel();
+                }
                 break;
         }
     }
@@ -1015,6 +1131,217 @@ class VoiceAgentApp {
         });
         
         showInfo('Playing test audio...', { duration: 2000 });
+    }
+    
+    // ========================================
+    // Text Input & Chat Features
+    // ========================================
+    
+    sendTextMessage() {
+        const text = this.elements.textInput?.value?.trim();
+        if (!text || !this.isConnected) return;
+        
+        // Add to conversation UI (also adds to history)
+        this.addMessage('user', text, true);
+        
+        // Send to server
+        this.send({
+            type: 'text_message',
+            text: text,
+            attachments: this.attachedFiles.map(f => ({
+                name: f.name,
+                type: f.type,
+                data: f.data
+            }))
+        });
+        
+        // Clear input and attachments
+        if (this.elements.textInput) {
+            this.elements.textInput.value = '';
+            this.autoResizeTextInput();
+        }
+        this.clearAttachments();
+        this.updateCharCounter();
+    }
+    
+    updateCharCounter() {
+        const text = this.elements.textInput?.value || '';
+        const count = text.length;
+        const maxLength = 2000;
+        
+        if (this.elements.charCounter) {
+            this.elements.charCounter.textContent = `${count}/${maxLength}`;
+            this.elements.charCounter.classList.toggle('warning', count > maxLength * 0.8);
+            this.elements.charCounter.classList.toggle('danger', count > maxLength * 0.95);
+        }
+        
+        // Disable send button if empty
+        if (this.elements.sendBtn) {
+            this.elements.sendBtn.disabled = count === 0;
+        }
+    }
+    
+    autoResizeTextInput() {
+        const textarea = this.elements.textInput;
+        if (!textarea) return;
+        
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+    }
+    
+    // ========================================
+    // File Attachments
+    // ========================================
+    
+    handleFileAttachment(files) {
+        if (!files || files.length === 0) return;
+        
+        Array.from(files).forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                this.attachedFiles.push({
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                    data: e.target.result.split(',')[1] // Base64 data
+                });
+                this.renderAttachments();
+                showInfo(`Attached: ${file.name}`, { duration: 2000 });
+            };
+            reader.readAsDataURL(file);
+        });
+        
+        // Clear file input
+        if (this.elements.fileInput) {
+            this.elements.fileInput.value = '';
+        }
+    }
+    
+    renderAttachments() {
+        // Create or get attachment preview area
+        let preview = document.querySelector('.attachment-preview');
+        if (!preview && this.attachedFiles.length > 0) {
+            preview = document.createElement('div');
+            preview.className = 'attachment-preview';
+            const chatInputArea = document.querySelector('.chat-input-area');
+            chatInputArea?.parentNode?.insertBefore(preview, chatInputArea.nextSibling);
+        }
+        
+        if (preview) {
+            if (this.attachedFiles.length === 0) {
+                preview.remove();
+                return;
+            }
+            
+            preview.innerHTML = this.attachedFiles.map((file, i) => `
+                <div class="attachment-item" data-index="${i}">
+                    <span>${escapeHtml(file.name)}</span>
+                    <span class="remove-attachment" onclick="app.removeAttachment(${i})">×</span>
+                </div>
+            `).join('');
+        }
+    }
+    
+    removeAttachment(index) {
+        this.attachedFiles.splice(index, 1);
+        this.renderAttachments();
+    }
+    
+    clearAttachments() {
+        this.attachedFiles = [];
+        this.renderAttachments();
+    }
+    
+    // ========================================
+    // Mute Toggle
+    // ========================================
+    
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        this.elements.muteBtn?.classList.toggle('muted', this.isMuted);
+        
+        // Mute/unmute TTS audio
+        this.audioHandler.setMuted?.(this.isMuted);
+        
+        showInfo(this.isMuted ? 'Audio muted' : 'Audio unmuted', { duration: 1500 });
+    }
+    
+    // ========================================
+    // Conversation History
+    // ========================================
+    
+    addToHistory(role, text) {
+        this.conversationHistory.push({
+            role,
+            text,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Update history panel if open
+        if (this.currentFlyout === 'history') {
+            this.renderHistoryPanel();
+        }
+    }
+    
+    renderHistoryPanel() {
+        const historyList = this.elements.historyList;
+        if (!historyList) return;
+        
+        if (this.conversationHistory.length === 0) {
+            historyList.innerHTML = `
+                <div class="history-empty">
+                    <svg viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>
+                    </svg>
+                    <p>No conversation history yet</p>
+                    <span>Start talking to see your conversation here</span>
+                </div>
+            `;
+            return;
+        }
+        
+        historyList.innerHTML = this.conversationHistory.map(entry => {
+            const time = new Date(entry.timestamp).toLocaleTimeString();
+            return `
+                <div class="history-entry ${entry.role}">
+                    <div class="history-entry-header">
+                        <span class="history-entry-role">${entry.role}</span>
+                        <span class="history-entry-time">${time}</span>
+                    </div>
+                    <div class="history-entry-text">${escapeHtml(entry.text)}</div>
+                </div>
+            `;
+        }).join('');
+        
+        historyList.scrollTop = historyList.scrollHeight;
+    }
+    
+    exportConversationHistory() {
+        if (this.conversationHistory.length === 0) {
+            showInfo('No conversation to export');
+            return;
+        }
+        
+        const content = this.conversationHistory.map(entry => {
+            const time = new Date(entry.timestamp).toLocaleString();
+            return `[${time}] ${entry.role.toUpperCase()}: ${entry.text}`;
+        }).join('\n\n');
+        
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `conversation-${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        showSuccess('Conversation exported');
+    }
+    
+    clearConversationHistory() {
+        this.conversationHistory = [];
+        this.renderHistoryPanel();
+        showInfo('History cleared');
     }
 }
 

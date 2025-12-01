@@ -29,6 +29,7 @@ export class AudioHandler {
         this.onAudioData = null;
         this.onVisualizationData = null;
         this.onPlaybackEnd = null;
+        this.isMuted = false;
     }
     
     /**
@@ -37,8 +38,19 @@ export class AudioHandler {
      */
     setVolume(volume) {
         this.volume = Math.max(0, Math.min(1, volume));
-        if (this.gainNode) {
+        if (this.gainNode && !this.isMuted) {
             this.gainNode.gain.value = this.volume;
+        }
+    }
+    
+    /**
+     * Set muted state
+     * @param {boolean} muted - Whether audio is muted
+     */
+    setMuted(muted) {
+        this.isMuted = muted;
+        if (this.gainNode) {
+            this.gainNode.gain.value = muted ? 0 : this.volume;
         }
     }
     
