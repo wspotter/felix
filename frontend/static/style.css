@@ -2480,10 +2480,6 @@ header h1 {
 }
 
 /* Improved ripple effect for menu items */
-.radial-item {
-    position: relative;
-}
-
 .radial-item .ripple {
     position: absolute;
     border-radius: 50%;
