@@ -2619,7 +2619,7 @@ header h1 {
         inset 0 0 20px rgba(var(--accent-rgb), 0.05);
 }
 
-/* Connecting lines from center to items */
+/* Connecting lines from center to items - HIDDEN */
 .radial-lines {
     position: absolute;
     top: 50%;
@@ -2628,6 +2628,7 @@ header h1 {
     height: 0;
     pointer-events: none;
     z-index: 1;
+    display: none; /* Hide the lines container */
 }
 
 .radial-line {
@@ -2640,7 +2641,8 @@ header h1 {
         transparent);
     transform-origin: top center;
     transition: all 0.5s cubic-bezier(0.68, -0.6, 0.32, 1.6);
-    opacity: 0.6;
+    opacity: 0;
+    display: none; /* Hide individual lines */
 }
 
 .radial-line.active {
@@ -2649,13 +2651,15 @@ header h1 {
         rgba(var(--accent-rgb), 0.5),
         transparent);
     width: 3px;
-    opacity: 1;
+    opacity: 0;
+    display: none; /* Hide active lines too */
     filter: drop-shadow(0 0 4px rgba(var(--accent-rgb), 0.8));
 }
 
 .radial-toggle:checked ~ .radial-lines .radial-line {
     height: 130px;
-    opacity: 0.6;
+    opacity: 0;
+    display: none; /* Ensure lines stay hidden when menu opens */
 }
 
 /* Position connecting lines to match item positions (starting at -90 degrees / 12 o'clock) */
