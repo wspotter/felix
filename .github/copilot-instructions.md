@@ -222,16 +222,17 @@ To add a new knowledge dataset for `knowledge_search()`:
 5. **Tool not available**: Import module in `builtin/__init__.py` and restart
 6. **Knowledge search fails**: Ensure `faiss-cpu` and `sentence-transformers` installed
 7. **Memory tools fail**: Ensure OpenMemory backend is running on port 8080
-8. **Music tools fail**: Ensure MPD is running (`systemctl --user start mpd`)
+8. **Music tools fail**: Ensure MPD server is running (check with `systemctl --user status mpd` on Linux)
 
 ## Music Player - MPD Integration
 
 Local music playback via Music Player Daemon (MPD). No external APIs or subscriptions.
 
 **Requirements:**
-- MPD installed: `sudo apt install mpd mpc`
+- MPD server installed: `sudo apt install mpd` (Linux) or via Homebrew on macOS
 - User config at `~/.config/mpd/mpd.conf`
 - Music directory: `~/Music` (symlinked to storage)
+- Python library: `python-mpd2>=3.1.0` (cross-platform MPD client)
 
 **Music Tools** (`server/tools/builtin/music_tools.py`):
 - `music_play(query)` - Play music by search or resume

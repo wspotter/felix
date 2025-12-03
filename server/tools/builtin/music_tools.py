@@ -10,16 +10,22 @@ Features:
 - Now playing info
 - Music state tracking for UI updates
 
-Requires: MPD running on localhost:6600, mpc command available
+Requires: MPD server running (localhost:6600 by default)
+Uses: python-mpd2 for cross-platform compatibility
 """
 
 import asyncio
 import logging
-import re
 from typing import Optional, Dict, Any
+from mpd.asyncio import MPDClient
 from ..registry import tool_registry
 
 logger = logging.getLogger(__name__)
+
+# MPD connection settings
+MPD_HOST = "localhost"
+MPD_PORT = 6600
+MPD_TIMEOUT = 5
 
 # Music state tracking (shared with main server for WebSocket updates)
 _music_state = {
@@ -41,85 +47,84 @@ _pre_duck_volume: Optional[int] = None
 DUCK_VOLUME = 30  # Volume level when ducking
 
 
-async def _run_mpc(*args: str, timeout: float = 5.0) -> tuple[str, int]:
-    """Run mpc command and return (stdout, return_code)."""
+async def _get_client() -> MPDClient:
+    """Create and connect MPD client."""
+    client = MPDClient()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "mpc", *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        await asyncio.wait_for(
+            client.connect(MPD_HOST, MPD_PORT),
+            timeout=MPD_TIMEOUT
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=timeout
-        )
-        return stdout.decode().strip(), proc.returncode
+        return client
+    except (ConnectionRefusedError, OSError) as e:
+        logger.error("mpd_connection_failed", error=str(e))
+        raise ConnectionError(f"Could not connect to MPD at {MPD_HOST}:{MPD_PORT}. Is MPD running?")
     except asyncio.TimeoutError:
-        logger.error("mpc_timeout", args=args)
-        return "", -1
-    except FileNotFoundError:
-        logger.error("mpc_not_found")
-        return "mpc command not found. Install with: sudo apt install mpc", -1
-    except Exception as e:
-        logger.error("mpc_error", error=str(e))
-        return str(e), -1
+        logger.error("mpd_timeout")
+        raise ConnectionError(f"MPD connection timeout")
+
+
+async def _disconnect_client(client: MPDClient):
+    """Safely disconnect MPD client."""
+    try:
+        client.disconnect()
+    except:
+        pass
 
 
 async def _update_music_state() -> Dict[str, Any]:
     """Update and return current music state from MPD."""
     global _music_state
     
-    output, code = await _run_mpc("status")
-    
-    if code != 0:
-        return _music_state
-    
-    lines = output.split("\n")
-    
-    # Parse current track (first line if playing)
-    if lines and not lines[0].startswith("volume:"):
-        # Format: "Artist - Title" or just filename
-        track_info = lines[0]
-        if " - " in track_info:
-            parts = track_info.split(" - ", 1)
-            _music_state["artist"] = parts[0].strip()
-            _music_state["current_track"] = parts[1].strip()
-        else:
-            _music_state["current_track"] = track_info
-            _music_state["artist"] = None
-    
-    # Parse status line: [playing] #1/10   0:45/3:21 (22%)
-    for line in lines:
-        if line.startswith("[playing]"):
-            _music_state["is_playing"] = True
-            _music_state["is_paused"] = False
-            # Extract position/duration
-            match = re.search(r"(\d+:\d+)/(\d+:\d+)", line)
-            if match:
-                _music_state["elapsed"] = match.group(1)
-                _music_state["duration"] = match.group(2)
-        elif line.startswith("[paused]"):
-            _music_state["is_playing"] = False
-            _music_state["is_paused"] = True
-        elif line.startswith("volume:"):
-            # Parse: volume:100%   repeat: off   random: off   single: off   consume: off
-            vol_match = re.search(r"volume:\s*(\d+)%", line)
-            if vol_match:
-                _music_state["volume"] = int(vol_match.group(1))
-            _music_state["repeat"] = "repeat: on" in line
-            _music_state["random"] = "random: on" in line
-    
-    # If no playing/paused line found, we're stopped
-    if not any(line.startswith("[") for line in lines):
-        _music_state["is_playing"] = False
-        _music_state["is_paused"] = False
-        _music_state["current_track"] = None
-        _music_state["artist"] = None
-    
-    # Get queue length
-    queue_out, _ = await _run_mpc("playlist")
-    if queue_out:
-        _music_state["queue_length"] = len(queue_out.split("\n"))
+    try:
+        client = await _get_client()
+        
+        try:
+            # Get current status
+            status = await client.status()
+            
+            # Parse state
+            state = status.get('state', 'stop')
+            _music_state["is_playing"] = (state == 'play')
+            _music_state["is_paused"] = (state == 'pause')
+            
+            # Parse volume
+            volume = status.get('volume', '100')
+            _music_state["volume"] = int(volume)
+            
+            # Parse repeat/random
+            _music_state["repeat"] = (status.get('repeat', '0') == '1')
+            _music_state["random"] = (status.get('random', '0') == '1')
+            
+            # Parse time
+            if 'time' in status:
+                elapsed, duration = status['time'].split(':')
+                _music_state["elapsed"] = f"{int(elapsed) // 60}:{int(elapsed) % 60:02d}"
+                _music_state["duration"] = f"{int(duration) // 60}:{int(duration) % 60:02d}"
+            
+            # Get current song
+            if state != 'stop':
+                currentsong = await client.currentsong()
+                _music_state["artist"] = currentsong.get('artist', None)
+                _music_state["current_track"] = currentsong.get('title', currentsong.get('file', 'Unknown'))
+                _music_state["album"] = currentsong.get('album', None)
+            else:
+                _music_state["current_track"] = None
+                _music_state["artist"] = None
+                _music_state["album"] = None
+            
+            # Get queue length
+            playlist_info = await client.playlistinfo()
+            _music_state["queue_length"] = len(playlist_info)
+            
+        finally:
+            await _disconnect_client(client)
+            
+    except ConnectionError as e:
+        logger.debug("mpd_unavailable", error=str(e))
+        # Return current state even if connection fails
+    except Exception as e:
+        logger.error("update_state_error", error=str(e))
     
     return _music_state.copy()
 
@@ -137,9 +142,17 @@ async def duck_volume():
         return
     
     _pre_duck_volume = _music_state["volume"]
-    await _run_mpc("volume", str(DUCK_VOLUME))
-    _music_state["volume"] = DUCK_VOLUME
-    logger.info("music_ducked", from_vol=_pre_duck_volume, to_vol=DUCK_VOLUME)
+    
+    try:
+        client = await _get_client()
+        try:
+            await client.setvol(DUCK_VOLUME)
+            _music_state["volume"] = DUCK_VOLUME
+            logger.info("music_ducked", from_vol=_pre_duck_volume, to_vol=DUCK_VOLUME)
+        finally:
+            await _disconnect_client(client)
+    except Exception as e:
+        logger.error("duck_volume_error", error=str(e))
 
 
 async def restore_volume():
@@ -147,10 +160,18 @@ async def restore_volume():
     global _pre_duck_volume
     
     if _pre_duck_volume is not None:
-        await _run_mpc("volume", str(_pre_duck_volume))
-        _music_state["volume"] = _pre_duck_volume
-        logger.info("music_restored", volume=_pre_duck_volume)
-        _pre_duck_volume = None
+        try:
+            client = await _get_client()
+            try:
+                await client.setvol(_pre_duck_volume)
+                _music_state["volume"] = _pre_duck_volume
+                logger.info("music_restored", volume=_pre_duck_volume)
+            finally:
+                await _disconnect_client(client)
+        except Exception as e:
+            logger.error("restore_volume_error", error=str(e))
+        finally:
+            _pre_duck_volume = None
 
 
 # ============================================
@@ -170,39 +191,53 @@ async def music_play(query: Optional[str] = None) -> str:
     Returns:
         What's now playing or error message
     """
-    if query:
-        # Search and play
-        search_out, code = await _run_mpc("search", "any", query)
-        if code != 0 or not search_out:
-            return f"No music found matching '{query}'. Try a different search term or add music to ~/Music folder."
+    try:
+        client = await _get_client()
         
-        # Clear queue and add search results
-        await _run_mpc("clear")
-        
-        # Add first 20 results to queue
-        tracks = search_out.split("\n")[:20]
-        for track in tracks:
-            if track.strip():
-                await _run_mpc("add", track)
-        
-        # Start playing
-        await _run_mpc("play")
-        await _update_music_state()
-        
-        return f"Playing {len(tracks)} tracks matching '{query}'. Now playing: {_music_state.get('current_track', 'Unknown')}"
-    else:
-        # Just play/resume
-        output, code = await _run_mpc("play")
-        await _update_music_state()
-        
-        if _music_state["current_track"]:
-            artist = _music_state.get("artist", "")
-            track = _music_state.get("current_track", "Unknown")
-            if artist:
-                return f"Now playing: {artist} - {track}"
-            return f"Now playing: {track}"
-        else:
-            return "No music in queue. Try: 'play some jazz' or add music to ~/Music folder."
+        try:
+            if query:
+                # Search and play
+                search_results = await client.search('any', query)
+                
+                if not search_results:
+                    return f"No music found matching '{query}'. Try a different search term or add music to ~/Music folder."
+                
+                # Clear queue and add search results (limit to 20)
+                await client.clear()
+                
+                count = 0
+                for song in search_results[:20]:
+                    file = song.get('file')
+                    if file:
+                        await client.add(file)
+                        count += 1
+                
+                # Start playing
+                await client.play(0)
+                await _update_music_state()
+                
+                return f"Playing {count} tracks matching '{query}'. Now playing: {_music_state.get('current_track', 'Unknown')}"
+            else:
+                # Just play/resume
+                await client.play()
+                await _update_music_state()
+                
+                if _music_state["current_track"]:
+                    artist = _music_state.get("artist", "")
+                    track = _music_state.get("current_track", "Unknown")
+                    if artist:
+                        return f"Now playing: {artist} - {track}"
+                    return f"Now playing: {track}"
+                else:
+                    return "No music in queue. Try: 'play some jazz' or add music to ~/Music folder."
+        finally:
+            await _disconnect_client(client)
+            
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_play_error", error=str(e))
+        return f"Error playing music: {e}"
 
 
 @tool_registry.register(
@@ -210,9 +245,19 @@ async def music_play(query: Optional[str] = None) -> str:
 )
 async def music_pause() -> str:
     """Pause the currently playing music."""
-    await _run_mpc("pause")
-    await _update_music_state()
-    return "Music paused."
+    try:
+        client = await _get_client()
+        try:
+            await client.pause(1)
+            await _update_music_state()
+            return "Music paused."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_pause_error", error=str(e))
+        return f"Error pausing music: {e}"
 
 
 @tool_registry.register(
@@ -220,9 +265,19 @@ async def music_pause() -> str:
 )
 async def music_stop() -> str:
     """Stop music playback."""
-    await _run_mpc("stop")
-    await _update_music_state()
-    return "Music stopped."
+    try:
+        client = await _get_client()
+        try:
+            await client.stop()
+            await _update_music_state()
+            return "Music stopped."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_stop_error", error=str(e))
+        return f"Error stopping music: {e}"
 
 
 @tool_registry.register(
@@ -230,17 +285,27 @@ async def music_stop() -> str:
 )
 async def music_next() -> str:
     """Skip to next track."""
-    await _run_mpc("next")
-    await asyncio.sleep(0.3)  # Let MPD update
-    await _update_music_state()
-    
-    if _music_state["current_track"]:
-        artist = _music_state.get("artist", "")
-        track = _music_state.get("current_track", "Unknown")
-        if artist:
-            return f"Skipped. Now playing: {artist} - {track}"
-        return f"Skipped. Now playing: {track}"
-    return "Skipped to next track."
+    try:
+        client = await _get_client()
+        try:
+            await client.next()
+            await asyncio.sleep(0.3)  # Let MPD update
+            await _update_music_state()
+            
+            if _music_state["current_track"]:
+                artist = _music_state.get("artist", "")
+                track = _music_state.get("current_track", "Unknown")
+                if artist:
+                    return f"Skipped. Now playing: {artist} - {track}"
+                return f"Skipped. Now playing: {track}"
+            return "Skipped to next track."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_next_error", error=str(e))
+        return f"Error skipping track: {e}"
 
 
 @tool_registry.register(
@@ -248,17 +313,27 @@ async def music_next() -> str:
 )
 async def music_previous() -> str:
     """Go to previous track."""
-    await _run_mpc("prev")
-    await asyncio.sleep(0.3)
-    await _update_music_state()
-    
-    if _music_state["current_track"]:
-        artist = _music_state.get("artist", "")
-        track = _music_state.get("current_track", "Unknown")
-        if artist:
-            return f"Previous track: {artist} - {track}"
-        return f"Previous track: {track}"
-    return "Went to previous track."
+    try:
+        client = await _get_client()
+        try:
+            await client.previous()
+            await asyncio.sleep(0.3)
+            await _update_music_state()
+            
+            if _music_state["current_track"]:
+                artist = _music_state.get("artist", "")
+                track = _music_state.get("current_track", "Unknown")
+                if artist:
+                    return f"Previous track: {artist} - {track}"
+                return f"Previous track: {track}"
+            return "Went to previous track."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_previous_error", error=str(e))
+        return f"Error going to previous track: {e}"
 
 
 @tool_registry.register(
@@ -275,9 +350,20 @@ async def music_volume(level: int) -> str:
         Confirmation of new volume level
     """
     level = max(0, min(100, level))
-    await _run_mpc("volume", str(level))
-    _music_state["volume"] = level
-    return f"Volume set to {level}%"
+    
+    try:
+        client = await _get_client()
+        try:
+            await client.setvol(level)
+            _music_state["volume"] = level
+            return f"Volume set to {level}%"
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_volume_error", error=str(e))
+        return f"Error setting volume: {e}"
 
 
 @tool_registry.register(
@@ -328,15 +414,27 @@ async def music_shuffle(enable: Optional[bool] = None) -> str:
     Returns:
         New shuffle state
     """
-    if enable is None:
-        # Toggle
-        await _run_mpc("random")
-    else:
-        await _run_mpc("random", "on" if enable else "off")
-    
-    await _update_music_state()
-    state = "enabled" if _music_state["random"] else "disabled"
-    return f"Shuffle {state}."
+    try:
+        client = await _get_client()
+        try:
+            if enable is None:
+                # Toggle
+                status = await client.status()
+                current = status.get('random', '0') == '1'
+                await client.random(0 if current else 1)
+            else:
+                await client.random(1 if enable else 0)
+            
+            await _update_music_state()
+            state = "enabled" if _music_state["random"] else "disabled"
+            return f"Shuffle {state}."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_shuffle_error", error=str(e))
+        return f"Error setting shuffle: {e}"
 
 
 @tool_registry.register(
@@ -352,14 +450,27 @@ async def music_repeat(enable: Optional[bool] = None) -> str:
     Returns:
         New repeat state
     """
-    if enable is None:
-        await _run_mpc("repeat")
-    else:
-        await _run_mpc("repeat", "on" if enable else "off")
-    
-    await _update_music_state()
-    state = "enabled" if _music_state["repeat"] else "disabled"
-    return f"Repeat {state}."
+    try:
+        client = await _get_client()
+        try:
+            if enable is None:
+                # Toggle
+                status = await client.status()
+                current = status.get('repeat', '0') == '1'
+                await client.repeat(0 if current else 1)
+            else:
+                await client.repeat(1 if enable else 0)
+            
+            await _update_music_state()
+            state = "enabled" if _music_state["repeat"] else "disabled"
+            return f"Repeat {state}."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_repeat_error", error=str(e))
+        return f"Error setting repeat: {e}"
 
 
 @tool_registry.register(
@@ -376,23 +487,31 @@ async def music_search(query: str, limit: int = 10) -> str:
     Returns:
         List of matching tracks
     """
-    output, code = await _run_mpc("search", "any", query)
-    
-    if code != 0 or not output:
-        return f"No results found for '{query}'. Make sure you have music files in ~/Music."
-    
-    tracks = output.split("\n")[:limit]
-    
-    result_lines = [f"Found {len(tracks)} tracks matching '{query}':"]
-    for i, track in enumerate(tracks, 1):
-        # Shorten long paths
-        display = track.split("/")[-1] if "/" in track else track
-        # Remove extension
-        display = re.sub(r"\.(mp3|flac|ogg|wav|m4a)$", "", display, flags=re.IGNORECASE)
-        result_lines.append(f"{i}. {display}")
-    
-    result_lines.append("\nSay 'play [search term]' to play these results.")
-    return "\n".join(result_lines)
+    try:
+        client = await _get_client()
+        try:
+            search_results = await client.search('any', query)
+            
+            if not search_results:
+                return f"No results found for '{query}'. Make sure you have music files in ~/Music."
+            
+            results = search_results[:limit]
+            
+            result_lines = [f"Found {len(search_results)} tracks matching '{query}' (showing {len(results)}):"]
+            for i, song in enumerate(results, 1):
+                artist = song.get('artist', 'Unknown Artist')
+                title = song.get('title', song.get('file', 'Unknown').split('/')[-1])
+                result_lines.append(f"{i}. {artist} - {title}")
+            
+            result_lines.append("\nSay 'play [search term]' to play these results.")
+            return "\n".join(result_lines)
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_search_error", error=str(e))
+        return f"Error searching music: {e}"
 
 
 @tool_registry.register(
@@ -408,21 +527,30 @@ async def music_queue_add(query: str) -> str:
     Returns:
         Confirmation of tracks added
     """
-    search_out, code = await _run_mpc("search", "any", query)
-    
-    if code != 0 or not search_out:
-        return f"No music found matching '{query}'."
-    
-    tracks = search_out.split("\n")[:10]
-    added = 0
-    
-    for track in tracks:
-        if track.strip():
-            await _run_mpc("add", track)
-            added += 1
-    
-    await _update_music_state()
-    return f"Added {added} tracks to the queue. Queue now has {_music_state['queue_length']} tracks."
+    try:
+        client = await _get_client()
+        try:
+            search_results = await client.search('any', query)
+            
+            if not search_results:
+                return f"No music found matching '{query}'."
+            
+            added = 0
+            for song in search_results[:10]:
+                file = song.get('file')
+                if file:
+                    await client.add(file)
+                    added += 1
+            
+            await _update_music_state()
+            return f"Added {added} tracks to the queue. Queue now has {_music_state['queue_length']} tracks."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_queue_add_error", error=str(e))
+        return f"Error adding to queue: {e}"
 
 
 @tool_registry.register(
@@ -430,9 +558,19 @@ async def music_queue_add(query: str) -> str:
 )
 async def music_queue_clear() -> str:
     """Clear all tracks from the queue."""
-    await _run_mpc("clear")
-    await _update_music_state()
-    return "Queue cleared."
+    try:
+        client = await _get_client()
+        try:
+            await client.clear()
+            await _update_music_state()
+            return "Queue cleared."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_queue_clear_error", error=str(e))
+        return f"Error clearing queue: {e}"
 
 
 @tool_registry.register(
@@ -448,35 +586,38 @@ async def music_queue_show(limit: int = 10) -> str:
     Returns:
         List of queued tracks
     """
-    output, code = await _run_mpc("playlist")
-    
-    if code != 0 or not output:
-        return "Queue is empty."
-    
-    tracks = output.split("\n")[:limit]
-    total = len(output.split("\n"))
-    
-    # Get current track position
-    status_out, _ = await _run_mpc("status")
-    current_pos = 0
-    for line in status_out.split("\n"):
-        match = re.search(r"#(\d+)/", line)
-        if match:
-            current_pos = int(match.group(1))
-            break
-    
-    result_lines = [f"Queue ({total} tracks):"]
-    for i, track in enumerate(tracks, 1):
-        marker = "▶ " if i == current_pos else "  "
-        # Shorten for display
-        display = track.split("/")[-1] if "/" in track else track
-        display = re.sub(r"\.(mp3|flac|ogg|wav|m4a)$", "", display, flags=re.IGNORECASE)
-        result_lines.append(f"{marker}{i}. {display}")
-    
-    if total > limit:
-        result_lines.append(f"  ... and {total - limit} more")
-    
-    return "\n".join(result_lines)
+    try:
+        client = await _get_client()
+        try:
+            playlist = await client.playlistinfo()
+            
+            if not playlist:
+                return "Queue is empty."
+            
+            total = len(playlist)
+            
+            # Get current track position
+            status = await client.status()
+            current_pos = int(status.get('song', -1))
+            
+            result_lines = [f"Queue ({total} tracks):"]
+            for i, song in enumerate(playlist[:limit]):
+                marker = "▶ " if i == current_pos else "  "
+                artist = song.get('artist', 'Unknown Artist')
+                title = song.get('title', song.get('file', 'Unknown').split('/')[-1])
+                result_lines.append(f"{marker}{i+1}. {artist} - {title}")
+            
+            if total > limit:
+                result_lines.append(f"  ... and {total - limit} more")
+            
+            return "\n".join(result_lines)
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_queue_show_error", error=str(e))
+        return f"Error showing queue: {e}"
 
 
 @tool_registry.register(
@@ -484,13 +625,22 @@ async def music_queue_show(limit: int = 10) -> str:
 )
 async def music_playlists() -> str:
     """List saved playlists."""
-    output, code = await _run_mpc("lsplaylists")
-    
-    if code != 0 or not output:
-        return "No playlists found. Create one with 'save playlist [name]'."
-    
-    playlists = output.split("\n")
-    return "Available playlists:\n" + "\n".join(f"• {p}" for p in playlists if p)
+    try:
+        client = await _get_client()
+        try:
+            playlists = await client.listplaylists()
+            
+            if not playlists:
+                return "No playlists found. Create one with 'save playlist [name]'."
+            
+            return "Available playlists:\n" + "\n".join(f"• {p['playlist']}" for p in playlists)
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_playlists_error", error=str(e))
+        return f"Error listing playlists: {e}"
 
 
 @tool_registry.register(
@@ -506,16 +656,22 @@ async def music_playlist_load(name: str) -> str:
     Returns:
         Confirmation or error
     """
-    await _run_mpc("clear")
-    output, code = await _run_mpc("load", name)
-    
-    if code != 0:
-        return f"Playlist '{name}' not found. Use 'list playlists' to see available ones."
-    
-    await _run_mpc("play")
-    await _update_music_state()
-    
-    return f"Loaded playlist '{name}'. Now playing: {_music_state.get('current_track', 'Unknown')}"
+    try:
+        client = await _get_client()
+        try:
+            await client.clear()
+            await client.load(name)
+            await client.play(0)
+            await _update_music_state()
+            
+            return f"Loaded playlist '{name}'. Now playing: {_music_state.get('current_track', 'Unknown')}"
+        finally:
+            await _disconnect_client(client)
+    except Exception as e:
+        if "No such playlist" in str(e) or "doesn't exist" in str(e):
+            return f"Playlist '{name}' not found. Use 'list playlists' to see available ones."
+        logger.error("music_playlist_load_error", error=str(e))
+        return f"Error loading playlist: {e}"
 
 
 @tool_registry.register(
@@ -531,14 +687,24 @@ async def music_playlist_save(name: str) -> str:
     Returns:
         Confirmation
     """
-    # Remove old playlist with same name if exists
-    await _run_mpc("rm", name)
-    output, code = await _run_mpc("save", name)
-    
-    if code != 0:
-        return f"Failed to save playlist: {output}"
-    
-    return f"Saved current queue as playlist '{name}'."
+    try:
+        client = await _get_client()
+        try:
+            # Remove old playlist with same name if exists
+            try:
+                await client.rm(name)
+            except:
+                pass  # Playlist doesn't exist, that's fine
+            
+            await client.save(name)
+            return f"Saved current queue as playlist '{name}'."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_playlist_save_error", error=str(e))
+        return f"Error saving playlist: {e}"
 
 
 @tool_registry.register(
@@ -546,8 +712,18 @@ async def music_playlist_save(name: str) -> str:
 )
 async def music_update_library() -> str:
     """Scan for new music files and update the database."""
-    await _run_mpc("update")
-    return "Updating music database. This may take a moment for large libraries."
+    try:
+        client = await _get_client()
+        try:
+            await client.update()
+            return "Updating music database. This may take a moment for large libraries."
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_update_error", error=str(e))
+        return f"Error updating library: {e}"
 
 
 @tool_registry.register(
@@ -555,32 +731,47 @@ async def music_update_library() -> str:
 )
 async def music_stats() -> str:
     """Get library statistics."""
-    output, code = await _run_mpc("stats")
-    
-    if code != 0:
-        return "Could not get music statistics."
-    
-    # Parse stats
-    lines = output.split("\n")
-    stats = {}
-    for line in lines:
-        if ":" in line:
-            key, val = line.split(":", 1)
-            stats[key.strip()] = val.strip()
-    
-    result = ["🎵 Music Library Stats:"]
-    if "Artists" in stats:
-        result.append(f"  Artists: {stats['Artists']}")
-    if "Albums" in stats:
-        result.append(f"  Albums: {stats['Albums']}")
-    if "Songs" in stats:
-        result.append(f"  Songs: {stats['Songs']}")
-    if "Play Time" in stats:
-        result.append(f"  Total Play Time: {stats['Play Time']}")
-    if "DB Play Time" in stats:
-        result.append(f"  Library Duration: {stats['DB Play Time']}")
-    
-    if len(result) == 1:
-        return "Music library is empty. Add files to ~/Music and run 'update music library'."
-    
-    return "\n".join(result)
+    try:
+        client = await _get_client()
+        try:
+            stats = await client.stats()
+            
+            result = ["🎵 Music Library Stats:"]
+            
+            artists = stats.get('artists', '0')
+            albums = stats.get('albums', '0')
+            songs = stats.get('songs', '0')
+            
+            result.append(f"  Artists: {artists}")
+            result.append(f"  Albums: {albums}")
+            result.append(f"  Songs: {songs}")
+            
+            # Format play time
+            playtime = int(stats.get('playtime', 0))
+            if playtime > 0:
+                hours = playtime // 3600
+                minutes = (playtime % 3600) // 60
+                result.append(f"  Total Play Time: {hours}h {minutes}m")
+            
+            db_playtime = int(stats.get('db_playtime', 0))
+            if db_playtime > 0:
+                hours = db_playtime // 3600
+                minutes = (db_playtime % 3600) // 60
+                days = hours // 24
+                hours = hours % 24
+                if days > 0:
+                    result.append(f"  Library Duration: {days}d {hours}h {minutes}m")
+                else:
+                    result.append(f"  Library Duration: {hours}h {minutes}m")
+            
+            if songs == '0':
+                return "Music library is empty. Add files to ~/Music and run 'update music library'."
+            
+            return "\n".join(result)
+        finally:
+            await _disconnect_client(client)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("music_stats_error", error=str(e))
+        return f"Error getting stats: {e}"
