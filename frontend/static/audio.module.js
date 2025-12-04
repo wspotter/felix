@@ -213,6 +213,7 @@ export class AudioHandler {
     
     stopPlayback() {
         this.playbackQueue = [];
+        const wasPlaying = this.isPlaying;
         this.isPlaying = false;
         
         if (this.currentSource) {
@@ -222,6 +223,11 @@ export class AudioHandler {
                 // Already stopped
             }
             this.currentSource = null;
+        }
+        
+        // Notify that playback ended (important for state management)
+        if (wasPlaying && this.onPlaybackEnd) {
+            this.onPlaybackEnd();
         }
     }
     

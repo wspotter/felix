@@ -631,6 +631,11 @@ class VoiceAgentApp {
                 this.reconnectDelay = 1000;
                 this.updateStatus('connected', 'Ready');
                 
+                // Reset audio state on connect/reconnect to prevent stale isPlaying flag
+                console.log('[Felix] WebSocket connected, resetting audio state. isPlaying was:', this.audioHandler.isPlaying);
+                this.audioHandler.stopPlayback();
+                console.log('[Felix] After stopPlayback, isPlaying is:', this.audioHandler.isPlaying);
+                
                 // Send initial settings (including backend config)
                 const settings = getAllSettings();
                 this.send({
@@ -732,6 +737,8 @@ class VoiceAgentApp {
                 case 'audio':
                     const audioData = base64ToArrayBuffer(message.data);
                     this.audioHandler.playAudio(audioData);
+                    // Start safety timeout in case playback doesn't complete normally
+                    this.startPlaybackTimeout(30000);
                     break;
                 case 'settings_updated':
                     // Server confirmed settings change
@@ -899,8 +906,15 @@ class VoiceAgentApp {
     }
     
     handlePlaybackEnd() {
-        if (this.currentState === 'speaking') {
-            this.send({ type: 'playback_done' });
+        // Always send playback_done when playback ends, regardless of current state
+        // This prevents the server from getting stuck in SPEAKING state
+        console.log('[playback] Audio playback ended, state:', this.currentState);
+        this.send({ type: 'playback_done' });
+        
+        // Clear any pending playback timeout
+        if (this._playbackTimeout) {
+            clearTimeout(this._playbackTimeout);
+            this._playbackTimeout = null;
         }
         
         const autoListen = getSetting('autoListen');
@@ -911,6 +925,18 @@ class VoiceAgentApp {
                 }
             }, 500);
         }
+    }
+    
+    // Safety timeout - if playback doesn't end naturally, force send playback_done
+    startPlaybackTimeout(durationMs = 30000) {
+        if (this._playbackTimeout) {
+            clearTimeout(this._playbackTimeout);
+        }
+        this._playbackTimeout = setTimeout(() => {
+            console.warn('[playback] Safety timeout reached, sending playback_done');
+            this.send({ type: 'playback_done' });
+            this._playbackTimeout = null;
+        }, durationMs);
     }
     
     // ========================================

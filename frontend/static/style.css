@@ -659,9 +659,9 @@ header h1 {
 .conversation-wrapper {
     width: 100%;
     max-width: 700px;
-    margin: 1.5rem auto 0;
+    margin: 1.5rem auto 1rem;
     flex-shrink: 0;
-    max-height: 35vh;
+    max-height: 50vh;
 }
 
 .conversation {
@@ -674,7 +674,7 @@ header h1 {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 1rem;
 }
 
 .message {

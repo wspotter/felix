@@ -257,13 +257,16 @@ def get_vad() -> SileroVAD:
     """Get or create the global VAD instance."""
     global _global_vad
     if _global_vad is None:
+        # IMPORTANT: VAD must use CPU to avoid CUDA library conflicts with faster-whisper
+        # PyTorch (Silero) and CTranslate2 (faster-whisper) bundle different cuDNN versions
+        # that crash when loaded together on CUDA. VAD is lightweight and runs fine on CPU.
         _global_vad = create_vad(
             vad_type="silero",
             threshold=settings.barge_in_threshold,
             sample_rate=settings.audio_sample_rate,
             min_speech_ms=settings.barge_in_min_speech_ms,
-            device=settings.whisper_device,
-            use_onnx=settings.whisper_device == "cpu",
+            device="cpu",
+            use_onnx=False,
         )
     return _global_vad
 
@@ -279,6 +282,18 @@ async def process_audio_pipeline(
 ):
     """Process audio through the full pipeline."""
     print(f"[DEBUG] process_audio_pipeline: state={session.state.name}, tts_playing={tts_playing}, audio_len={len(audio_data)}", flush=True)
+    
+    # Check for speaking timeout - auto-reset to IDLE if stuck
+    if session.check_speaking_timeout():
+        logger.warning("auto_reset_from_speaking_timeout", client_id=client_id)
+        session.set_state(SessionState.IDLE)
+        await manager.send_json(client_id, {
+            "type": "state",
+            "state": "idle"
+        })
+        # Don't return - let this audio be processed normally
+        tts_playing = False
+    
     try:
         # Get VAD instance
         vad = get_vad()
@@ -804,9 +819,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     data = json.loads(message["text"])
                     msg_type = data.get("type")
+                    print(f"[DEBUG] JSON message received: type={msg_type}", flush=True)
                     logger.info("control_message", type=msg_type, client_id=client_id)
                     
                     if msg_type == "start_listening":
+                        print(f"[DEBUG] START_LISTENING - setting state to LISTENING", flush=True)
                         session.set_state(SessionState.LISTENING)
                         session.audio_buffer.clear()
                         await manager.send_json(client_id, {

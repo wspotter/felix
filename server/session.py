@@ -12,6 +12,9 @@ from .llm.conversation import ConversationHistory
 
 logger = structlog.get_logger()
 
+# Timeout for SPEAKING state (seconds) - auto-reset if playback_done not received
+SPEAKING_TIMEOUT = 30.0
+
 
 class SessionState(Enum):
     """Voice session states."""
@@ -44,6 +47,7 @@ class Session:
     
     # Timing
     last_activity: float = field(default_factory=time.time)
+    speaking_started: float = 0.0  # When SPEAKING state began
     
     def set_state(self, new_state: SessionState) -> None:
         """Update session state."""
@@ -51,7 +55,24 @@ class Session:
         self.state = new_state
         self._stop_requested = False
         self.last_activity = time.time()
+        
+        # Track when speaking started for timeout
+        if new_state == SessionState.SPEAKING:
+            self.speaking_started = time.time()
+        
         logger.info("state_change", old=old_state.name, new=new_state.name)
+    
+    def check_speaking_timeout(self) -> bool:
+        """
+        Check if SPEAKING state has timed out.
+        Returns True if we should auto-reset to IDLE.
+        """
+        if self.state == SessionState.SPEAKING:
+            elapsed = time.time() - self.speaking_started
+            if elapsed > SPEAKING_TIMEOUT:
+                logger.warning("speaking_timeout", elapsed=elapsed, timeout=SPEAKING_TIMEOUT)
+                return True
+        return False
     
     def interrupt(self) -> None:
         """Signal to interrupt current operation (barge-in)."""

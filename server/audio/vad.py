@@ -63,6 +63,7 @@ class SileroVAD:
         self._triggered = False
         self._buffer = np.array([], dtype=np.float32)
         
+        self.reset()
         logger.info("vad_initialized", threshold=threshold, sample_rate=sample_rate)
     
     def reset(self) -> None:
@@ -99,6 +100,8 @@ class SileroVAD:
             self._buffer = self._buffer[self._chunk_size:]
             
             audio_tensor = torch.from_numpy(chunk)
+            if len(audio_tensor.shape) == 1:
+                audio_tensor = audio_tensor.unsqueeze(0)
             if not self.use_onnx:
                 audio_tensor = audio_tensor.to(self.device)
             speech_prob = self.model(audio_tensor, self.sample_rate).item()
