@@ -35,7 +35,10 @@
                     </div>
                     <h1>Voice Agent</h1>
                 </div>
-                <p class="subtitle">Speak naturally — I'll listen and respond</p>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <p class="subtitle" style="margin:0;">Speak naturally — I'll listen and respond</p>
+                    <a class="pill admin-link" href="/admin.html" target="_blank" rel="noopener">Admin</a>
+                </div>
             </header>
 
             <!-- Status Bar -->
@@ -438,6 +441,7 @@
                         <option value="ollama">Ollama (localhost:11434)</option>
                         <option value="lmstudio">LM Studio (localhost:1234)</option>
                         <option value="openai">OpenAI Compatible</option>
+                        <option value="openrouter">OpenRouter (100+ models)</option>
                     </select>
                 </div>
                 
@@ -454,6 +458,16 @@
                 <div class="setting backend-url-setting hidden" id="openaiUrlSetting">
                     <label for="openaiUrl">OpenAI API URL</label>
                     <input type="text" id="openaiUrl" value="https://api.openai.com" placeholder="https://api.openai.com">
+                </div>
+
+                <div class="setting backend-url-setting hidden" id="openrouterUrlSetting">
+                    <label for="openrouterUrl">OpenRouter API URL</label>
+                    <input type="text" id="openrouterUrl" value="https://openrouter.ai/api/v1" placeholder="https://openrouter.ai/api/v1">
+                </div>
+
+                <div class="setting hidden" id="openrouterKeySetting">
+                    <label for="openrouterApiKeyInput">OpenRouter API Key</label>
+                    <input type="password" id="openrouterApiKeyInput" value="" placeholder="sk-or-v1-...">
                 </div>
                 
                 <div class="setting hidden" id="apiKeySetting">
@@ -492,6 +506,14 @@
                         <input type="checkbox" id="showTimestamps">
                         Show timestamps in chat
                     </label>
+                </div>
+
+                <div class="setting">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="unloadOtherLLMs">
+                        Unload other LLMs when loading selected model
+                    </label>
+                    <span class="setting-hint">Helps free GPU/CPU when switching providers</span>
                 </div>
             </div>
 

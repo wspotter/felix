@@ -20,6 +20,8 @@ import {
     startStatusPolling 
 } from './music.js';
 
+const CONVERSATION_STORAGE_KEY = 'felix-conversation-history';
+
 class VoiceAgentApp {
     constructor() {
         // WebSocket
@@ -49,7 +51,7 @@ class VoiceAgentApp {
         this.canvasCtx = null;
         
         // Conversation history
-        this.conversationHistory = [];
+        this.conversationHistory = this.loadConversationHistory();
         this.attachedFiles = [];
         
         // Initialize
@@ -80,6 +82,10 @@ class VoiceAgentApp {
         
         // Update UI from settings
         this.updateUIFromSettings();
+
+        // Restore any locally saved conversation for this browser
+        this.restoreConversationFromHistory();
+        this.renderHistoryPanel();
         
         // Connect to server
         this.connect();
@@ -108,7 +114,7 @@ class VoiceAgentApp {
             toolsIndicator: document.getElementById('toolsIndicator'),
             toolName: document.getElementById('toolName'),
             
-            // Flyout
+            unloadOtherLLMs: document.getElementById('unloadOtherLLMs'),
             flyoutContainer: document.getElementById('flyoutContainer'),
             flyoutTabs: document.getElementById('flyoutTabs'),
             flyoutClose: document.getElementById('flyoutClose'),
@@ -128,17 +134,22 @@ class VoiceAgentApp {
             refreshModelsBtn: document.getElementById('refreshModelsBtn'),
             autoListen: document.getElementById('autoListen'),
             showTimestamps: document.getElementById('showTimestamps'),
+            unloadOtherLLMs: document.getElementById('unloadOtherLLMs'),
             
             // Backend settings
             backendSelect: document.getElementById('backendSelect'),
             ollamaUrl: document.getElementById('ollamaUrl'),
             lmstudioUrl: document.getElementById('lmstudioUrl'),
             openaiUrl: document.getElementById('openaiUrl'),
+            openrouterUrl: document.getElementById('openrouterUrl'),
             apiKeyInput: document.getElementById('apiKeyInput'),
+            openrouterApiKeyInput: document.getElementById('openrouterApiKeyInput'),
             ollamaUrlSetting: document.getElementById('ollamaUrlSetting'),
             lmstudioUrlSetting: document.getElementById('lmstudioUrlSetting'),
             openaiUrlSetting: document.getElementById('openaiUrlSetting'),
+            openrouterUrlSetting: document.getElementById('openrouterUrlSetting'),
             apiKeySetting: document.getElementById('apiKeySetting'),
+            openrouterKeySetting: document.getElementById('openrouterKeySetting'),
             
             // Volume and speed sliders
             volumeSlider: document.getElementById('volumeSlider'),
@@ -382,6 +393,9 @@ class VoiceAgentApp {
         if (this.elements.showTimestamps) {
             this.elements.showTimestamps.checked = settings.showTimestamps;
         }
+        if (this.elements.unloadOtherLLMs) {
+            this.elements.unloadOtherLLMs.checked = settings.unloadOtherLLMs;
+        }
         if (this.elements.modelName) {
             this.elements.modelName.textContent = settings.model.split(':')[0];
         }
@@ -401,6 +415,12 @@ class VoiceAgentApp {
         }
         if (this.elements.apiKeyInput) {
             this.elements.apiKeyInput.value = settings.openaiApiKey || '';
+        }
+        if (this.elements.openrouterUrl) {
+            this.elements.openrouterUrl.value = settings.openrouterUrl || 'https://openrouter.ai/api/v1';
+        }
+        if (this.elements.openrouterApiKeyInput) {
+            this.elements.openrouterApiKeyInput.value = settings.openrouterApiKey || '';
         }
         this.updateBackendVisibility(settings.llmBackend || 'ollama');
         
@@ -441,7 +461,9 @@ class VoiceAgentApp {
         this.elements.ollamaUrlSetting?.classList.add('hidden');
         this.elements.lmstudioUrlSetting?.classList.add('hidden');
         this.elements.openaiUrlSetting?.classList.add('hidden');
+        this.elements.openrouterUrlSetting?.classList.add('hidden');
         this.elements.apiKeySetting?.classList.add('hidden');
+        this.elements.openrouterKeySetting?.classList.add('hidden');
         
         // Show relevant settings based on backend
         switch (backend) {
@@ -454,6 +476,10 @@ class VoiceAgentApp {
             case 'openai':
                 this.elements.openaiUrlSetting?.classList.remove('hidden');
                 this.elements.apiKeySetting?.classList.remove('hidden');
+                break;
+            case 'openrouter':
+                this.elements.openrouterUrlSetting?.classList.remove('hidden');
+                this.elements.openrouterKeySetting?.classList.remove('hidden');
                 break;
         }
     }
@@ -473,6 +499,10 @@ class VoiceAgentApp {
             case 'openai':
                 url = this.elements.openaiUrl?.value || 'https://api.openai.com';
                 apiKey = this.elements.apiKeyInput?.value || '';
+                break;
+            case 'openrouter':
+                url = this.elements.openrouterUrl?.value || 'https://openrouter.ai/api/v1';
+                apiKey = this.elements.openrouterApiKeyInput?.value || '';
                 break;
         }
         
@@ -572,14 +602,17 @@ class VoiceAgentApp {
             model: this.elements.modelSelect?.value,
             autoListen: this.elements.autoListen?.checked,
             showTimestamps: this.elements.showTimestamps?.checked,
+            unloadOtherLLMs: this.elements.unloadOtherLLMs?.checked,
             volume: parseInt(this.elements.volumeSlider?.value || 80),
             voiceSpeed: parseInt(this.elements.voiceSpeedSlider?.value || 100),
             // Backend settings
             llmBackend: this.elements.backendSelect?.value || 'ollama',
-            ollamaUrl: this.elements.ollamaUrl?.value || 'http://localhost:11434',
-            lmstudioUrl: this.elements.lmstudioUrl?.value || 'http://localhost:1234',
-            openaiUrl: this.elements.openaiUrl?.value || 'https://api.openai.com',
-            openaiApiKey: this.elements.apiKeyInput?.value || '',
+            ollamaUrl: (this.elements.ollamaUrl?.value || 'http://localhost:11434').trim(),
+            lmstudioUrl: (this.elements.lmstudioUrl?.value || 'http://localhost:1234').trim(),
+            openaiUrl: (this.elements.openaiUrl?.value || 'https://api.openai.com').trim(),
+            openaiApiKey: (this.elements.apiKeyInput?.value || '').trim(),
+            openrouterUrl: (this.elements.openrouterUrl?.value || 'https://openrouter.ai/api/v1').trim(),
+            openrouterApiKey: (this.elements.openrouterApiKeyInput?.value || '').trim(),
         };
         
         saveSettings(newSettings);
@@ -608,6 +641,9 @@ class VoiceAgentApp {
                 lmstudioUrl: newSettings.lmstudioUrl,
                 openaiUrl: newSettings.openaiUrl,
                 openaiApiKey: newSettings.openaiApiKey,
+                openrouterUrl: newSettings.openrouterUrl,
+                openrouterApiKey: newSettings.openrouterApiKey,
+                unloadOtherLLMs: newSettings.unloadOtherLLMs,
             });
         }
         
@@ -648,6 +684,9 @@ class VoiceAgentApp {
                     lmstudioUrl: settings.lmstudioUrl,
                     openaiUrl: settings.openaiUrl,
                     openaiApiKey: settings.openaiApiKey,
+                    openrouterUrl: settings.openrouterUrl,
+                    openrouterApiKey: settings.openrouterApiKey,
+                    unloadOtherLLMs: settings.unloadOtherLLMs,
                 });
                 
                 // Start music status polling
@@ -1013,7 +1052,8 @@ class VoiceAgentApp {
     // Conversation UI
     // ========================================
     
-    addMessage(role, text, isFinal = true) {
+    addMessage(role, text, isFinal = true, options = {}) {
+        const { skipHistory = false } = options;
         const conversation = this.elements.conversation;
         if (!conversation) return;
         
@@ -1031,7 +1071,7 @@ class VoiceAgentApp {
                 }
             }
             // Add to history when finalized
-            if (role !== 'system') {
+            if (!skipHistory && role !== 'system') {
                 this.addToHistory(role, text);
             }
         } else if (!messageEl) {
@@ -1048,7 +1088,7 @@ class VoiceAgentApp {
                 }
             }
             // Add to history if final and not system
-            if (isFinal && role !== 'system') {
+            if (isFinal && !skipHistory && role !== 'system') {
                 this.addToHistory(role, text);
             }
         } else {
@@ -1762,12 +1802,39 @@ class VoiceAgentApp {
     // Conversation History
     // ========================================
     
+    loadConversationHistory() {
+        try {
+            const stored = localStorage.getItem(CONVERSATION_STORAGE_KEY);
+            return stored ? JSON.parse(stored) : [];
+        } catch (err) {
+            console.warn('Failed to load conversation history from localStorage', err);
+            return [];
+        }
+    }
+
+    saveConversationHistory() {
+        try {
+            localStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(this.conversationHistory));
+        } catch (err) {
+            console.warn('Failed to save conversation history to localStorage', err);
+        }
+    }
+
+    restoreConversationFromHistory() {
+        if (!this.elements.conversation || this.conversationHistory.length === 0) return;
+        this.elements.conversation.innerHTML = '';
+        this.conversationHistory.forEach(entry => {
+            this.addMessage(entry.role, entry.text, true, { skipHistory: true });
+        });
+    }
+
     addToHistory(role, text) {
         this.conversationHistory.push({
             role,
             text,
             timestamp: new Date().toISOString()
         });
+        this.saveConversationHistory();
         
         // Update history panel if open
         if (this.currentFlyout === 'history') {
@@ -1832,6 +1899,7 @@ class VoiceAgentApp {
     
     clearConversationHistory() {
         this.conversationHistory = [];
+        this.saveConversationHistory();
         this.renderHistoryPanel();
         showInfo('History cleared');
     }

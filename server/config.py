@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # STT Settings (faster-whisper with CUDA or whisper.cpp with ROCm)
-    whisper_model: str = Field(default="large-v3-turbo", description="Whisper model name/size")
+    whisper_model: str = Field(default="ggml-large-v3-turbo.bin", description="Whisper model name/size")
     whisper_device: str = Field(default="cuda", description="Device: cuda, cpu, or auto")
     whisper_compute_type: str = Field(default="float16", description="Compute type: float16, int8, int8_float16")
     whisper_gpu_device: int = Field(default=0, description="GPU device index for CUDA")
@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Server Settings
     server_host: str = Field(default="0.0.0.0")
     server_port: int = Field(default=8000)
+    admin_token: str = Field(default="", description="Admin dashboard token for protected endpoints")
     
     # Audio Settings
     audio_sample_rate: int = Field(default=16000)

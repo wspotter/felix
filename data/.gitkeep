@@ -1,0 +1,10 @@
+{
+  "admin": {
+    "username": "admin",
+    "password_hash": "",
+    "is_admin": true,
+    "created_at": "",
+    "last_login": "",
+    "settings": {}
+  }
+}

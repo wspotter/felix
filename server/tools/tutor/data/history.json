@@ -1,0 +1,10 @@
+{
+  "default": {
+    "music_play": 6,
+    "get_weather": 4,
+    "web_search": 1,
+    "list_available_tools": 1,
+    "knowledge_search": 1,
+    "show_code": 1
+  }
+}

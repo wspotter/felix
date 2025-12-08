@@ -4,6 +4,12 @@
 
 A production-ready, fully local voice assistant with real-time conversation, barge-in (interruption) support, and autonomous tool execution. Built for high-performance on AMD MI50 GPUs.
 
+## Admin Dashboard
+
+- UI: open `/admin.html` (new tab from header link).
+- Auth: send header `X-Admin-Token` matching env `ADMIN_TOKEN` (maps to `settings.admin_token`).
+- Rotate by changing `ADMIN_TOKEN` and restarting the server.
+
 ---
 
 ## Architecture

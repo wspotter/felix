@@ -18,23 +18,26 @@ const DEFAULT_SETTINGS = {
     model: 'llama3.2',
     
     // Backend
-    llmBackend: 'ollama',  // ollama, lmstudio, openai
+    llmBackend: 'ollama',  // ollama, lmstudio, openai, openrouter
     ollamaUrl: 'http://localhost:11434',
     lmstudioUrl: 'http://localhost:1234',
     openaiUrl: 'https://api.openai.com',
     openaiApiKey: '',
+    openrouterUrl: 'https://openrouter.ai/api/v1',
+    openrouterApiKey: '',
     
     // Behavior
     autoListen: true,
     showTimestamps: false,
     pushToTalkKey: 'Space',
+    unloadOtherLLMs: false,
 };
 
 // Valid options for validation
 const VALID_OPTIONS = {
     theme: ['midnight', 'redroom', 'pink', 'babyblue', 'teal', 'emerald', 'sunset', 'cyberpunk', 'ocean', 'rose'],
     voice: ['amy', 'lessac', 'ryan'],
-    llmBackend: ['ollama', 'lmstudio', 'openai'],
+    llmBackend: ['ollama', 'lmstudio', 'openai', 'openrouter'],
 };
 
 const STORAGE_KEY = 'voiceAgentSettings';
@@ -145,6 +148,9 @@ function validateSettings(settings) {
     if (typeof validated.openaiUrl !== 'string' || !validated.openaiUrl.startsWith('http')) {
         validated.openaiUrl = DEFAULT_SETTINGS.openaiUrl;
     }
+    if (typeof validated.openrouterUrl !== 'string' || !validated.openrouterUrl.startsWith('http')) {
+        validated.openrouterUrl = DEFAULT_SETTINGS.openrouterUrl;
+    }
     
     // Clamp numeric values
     validated.volume = Math.min(100, Math.max(0, Number(validated.volume) || DEFAULT_SETTINGS.volume));
@@ -154,6 +160,7 @@ function validateSettings(settings) {
     validated.autoListen = Boolean(validated.autoListen);
     validated.showTimestamps = Boolean(validated.showTimestamps);
     validated.reducedMotion = Boolean(validated.reducedMotion);
+    validated.unloadOtherLLMs = Boolean(validated.unloadOtherLLMs);
     
     return validated;
 }
@@ -200,6 +207,8 @@ export function getActiveApiUrl() {
             return currentSettings.lmstudioUrl;
         case 'openai':
             return currentSettings.openaiUrl;
+        case 'openrouter':
+            return currentSettings.openrouterUrl;
         case 'ollama':
         default:
             return currentSettings.ollamaUrl;

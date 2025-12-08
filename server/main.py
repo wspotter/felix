@@ -5,12 +5,14 @@ Production-ready with AMD MI50 GPU acceleration.
 import asyncio
 import json
 import base64
+import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 import threading
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import structlog
@@ -18,7 +20,7 @@ import structlog
 from .config import settings
 from .session import Session, SessionState
 from .audio.vad import create_vad, SileroVAD
-from .stt.whisper import get_stt  # faster-whisper with CUDA
+from .stt.whisper_cpp import get_stt  # faster-whisper with CUDA
 from .llm.ollama import get_llm_client, list_models_for_backend
 from .tts.piper_tts import get_tts, list_voices  # Piper local TTS
 from .tools import tool_registry, tool_executor
@@ -43,14 +45,45 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+# Admin telemetry buffers
+ADMIN_EVENT_LIMIT = 200
+ADMIN_LOG_LIMIT = 200
+admin_events: deque[dict] = deque(maxlen=ADMIN_EVENT_LIMIT)
+admin_logs: deque[dict] = deque(maxlen=ADMIN_LOG_LIMIT)
+
+
+def record_event(event_type: str, **payload) -> None:
+    admin_events.append({
+        "type": event_type,
+        "timestamp": time.time(),
+        **payload,
+    })
+
+
+def record_log(level: str, message: str, **payload) -> None:
+    admin_logs.append({
+        "level": level,
+        "message": message,
+        "timestamp": time.time(),
+        **payload,
+    })
+
+
+def require_admin(token: str = Header(default=None, alias="X-Admin-Token")) -> None:
+    if not settings.admin_token:
+        raise HTTPException(status_code=401, detail="Admin access disabled")
+    if token != settings.admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle management."""
     logger.info("Starting Voice Agent server...")
+    record_event("startup")
     
-    # Initialize STT (faster-whisper with CUDA)
-    logger.info("Loading Whisper model on CUDA GPU...")
+    # Initialize STT (whisper.cpp with ROCm)
+    logger.info("Loading Whisper model with ROCm...")
     await get_stt()
     logger.info("Whisper ready", model=settings.whisper_model)
     
@@ -79,6 +112,7 @@ async def lifespan(app: FastAPI):
     yield
     
     logger.info("Shutting down Voice Agent server...")
+    record_event("shutdown")
     
     # Shutdown ComfyUI service
     if comfy_service:
@@ -102,6 +136,12 @@ app.mount("/static", StaticFiles(directory=frontend_path / "static"), name="stat
 async def index():
     """Serve the main page."""
     return FileResponse(frontend_path / "index.html")
+
+
+@app.get("/admin.html")
+async def admin():
+    """Serve the admin dashboard."""
+    return FileResponse(frontend_path / "admin.html")
 
 
 @app.get("/manifest.json")
@@ -181,7 +221,7 @@ async def get_models(
     Get available LLM models for a backend.
     
     Args:
-        backend: Backend type (ollama, lmstudio, openai)
+        backend: Backend type (ollama, lmstudio, openai, openrouter)
         url: Backend URL (uses defaults if not provided)
         api_key: API key (for OpenAI-compatible backends)
     """
@@ -190,6 +230,7 @@ async def get_models(
         "ollama": "http://localhost:11434",
         "lmstudio": "http://localhost:1234",
         "openai": "https://api.openai.com",
+        "openrouter": "https://openrouter.ai/api/v1",
     }
     
     # Validate backend
@@ -211,6 +252,52 @@ async def get_models(
         return {"models": [], "error": str(e)}
 
 
+def _session_snapshot(client_id: str, session: Session) -> dict:
+    history = session.conversation_history
+    messages = list(history._messages)
+    return {
+        "client_id": client_id,
+        "state": session.state.name,
+        "last_activity": session.last_activity,
+        "speaking_timeout": session.check_speaking_timeout(),
+        "history_counts": {
+            "total": len(messages),
+            "user": len([m for m in messages if m.role == "user"]),
+            "assistant": len([m for m in messages if m.role == "assistant"]),
+            "tool": len([m for m in messages if m.role == "tool"]),
+        },
+    }
+
+
+@app.get("/api/admin/health")
+async def admin_health(_: None = Depends(require_admin)):
+    base_health = await health()
+    return {
+        **base_health,
+        "active_connections": len(manager.active_connections),
+        "active_sessions": len(manager.sessions),
+        "events": len(admin_events),
+        "logs": len(admin_logs),
+    }
+
+
+@app.get("/api/admin/sessions")
+async def admin_sessions(_: None = Depends(require_admin)):
+    return {
+        "sessions": [_session_snapshot(cid, sess) for cid, sess in manager.sessions.items()]
+    }
+
+
+@app.get("/api/admin/events")
+async def admin_events_feed(_: None = Depends(require_admin)):
+    return {"events": list(admin_events)}
+
+
+@app.get("/api/admin/logs")
+async def admin_logs_feed(_: None = Depends(require_admin)):
+    return {"logs": list(admin_logs)}
+
+
 class ConnectionManager:
     """Manages WebSocket connections and their sessions."""
     
@@ -223,6 +310,7 @@ class ConnectionManager:
         self.active_connections[client_id] = websocket
         self.sessions[client_id] = Session()
         logger.info("Client connected", client_id=client_id)
+        record_event("client_connected", client_id=client_id)
     
     def disconnect(self, client_id: str):
         if client_id in self.active_connections:
@@ -230,6 +318,7 @@ class ConnectionManager:
         if client_id in self.sessions:
             del self.sessions[client_id]
         logger.info("Client disconnected", client_id=client_id)
+        record_event("client_disconnected", client_id=client_id)
     
     async def send_json(self, client_id: str, data: dict):
         if client_id in self.active_connections:
@@ -540,6 +629,7 @@ async def process_audio_pipeline(
                 except Exception as llm_error:
                     error_msg = str(llm_error)
                     logger.error("LLM error", error=error_msg, model=model)
+                    record_log("error", "LLM error", client_id=client_id, error=error_msg, model=model)
                     
                     # Send user-friendly error
                     if "404" in error_msg or "not found" in error_msg.lower():
@@ -607,6 +697,7 @@ async def process_audio_pipeline(
         
     except Exception as e:
         logger.error("Pipeline error", error=str(e), client_id=client_id)
+        record_log("error", "Pipeline error", client_id=client_id, error=str(e))
         await manager.send_json(client_id, {
             "type": "error",
             "message": str(e)
@@ -1019,6 +1110,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(client_id)
     except Exception as e:
         logger.error("WebSocket error", error=str(e), client_id=client_id)
+        record_log("error", "WebSocket error", client_id=client_id, error=str(e))
         manager.disconnect(client_id)
 
 

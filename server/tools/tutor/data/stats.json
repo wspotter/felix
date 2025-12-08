@@ -1,0 +1,33 @@
+{
+  "total_calls": 15,
+  "successes": 14,
+  "failures": 1,
+  "overrides": 0,
+  "override_correct": 0,
+  "by_tool": {
+    "music_play": {
+      "success": 6,
+      "failure": 0
+    },
+    "get_weather": {
+      "success": 4,
+      "failure": 1
+    },
+    "web_search": {
+      "success": 1,
+      "failure": 0
+    },
+    "list_available_tools": {
+      "success": 1,
+      "failure": 0
+    },
+    "knowledge_search": {
+      "success": 1,
+      "failure": 0
+    },
+    "show_code": {
+      "success": 1,
+      "failure": 0
+    }
+  }
+}

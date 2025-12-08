@@ -1,6 +1,6 @@
 """
 LLM Client
-Supports Ollama, LM Studio, and OpenAI-compatible APIs.
+Supports Ollama, LM Studio, OpenAI-compatible APIs, and OpenRouter.
 Streaming responses with function/tool calling support.
 """
 import asyncio
@@ -16,7 +16,7 @@ from .conversation import ConversationHistory
 logger = structlog.get_logger()
 
 # Backend types
-BackendType = Literal["ollama", "lmstudio", "openai"]
+BackendType = Literal["ollama", "lmstudio", "openai", "openrouter"]
 
 
 def extract_json_tool_calls(text: str) -> list[dict]:
@@ -196,6 +196,8 @@ class LLMClient:
                 self.base_url = getattr(settings, 'lmstudio_url', 'http://localhost:1234')
             elif self.backend == "openai":
                 self.base_url = getattr(settings, 'openai_url', 'https://api.openai.com')
+            elif self.backend == "openrouter":
+                self.base_url = getattr(settings, 'openrouter_url', 'https://openrouter.ai/api/v1')
             else:  # ollama
                 self.base_url = getattr(settings, 'ollama_url', 'http://localhost:11434')
             self.base_url = self.base_url.rstrip("/")
@@ -254,8 +256,11 @@ class LLMClient:
         if self._client is None:
             headers = {}
             # Add API key for OpenAI-compatible backends
-            if self.api_key and self.backend in ("openai", "lmstudio"):
+            if self.api_key and self.backend in ("openai", "lmstudio", "openrouter"):
                 headers["Authorization"] = f"Bearer {self.api_key}"
+            if self.backend == "openrouter":
+                headers["HTTP-Referer"] = "https://openrouter.ai"
+                headers["X-Title"] = "Felix Voice Agent"
             
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
@@ -308,6 +313,9 @@ class LLMClient:
         """Get the correct API endpoint for the current backend."""
         if self.backend == "ollama":
             return "/api/chat"
+        elif self.backend == "openrouter":
+            # OpenRouter URL already has /api/v1, so just /chat/completions
+            return "/chat/completions"
         else:
             # LM Studio and OpenAI use /v1/chat/completions
             return "/v1/chat/completions"
@@ -356,6 +364,10 @@ class LLMClient:
         Yields:
             Response chunks with type: "text", "tool_call", or "tool_result"
         """
+        # Fast-fail when OpenRouter is selected without an API key to avoid confusing 404s
+        if self.backend == "openrouter" and not self.api_key:
+            raise ValueError("OpenRouter API key missing. Add it in Settings → LLM → API key.")
+
         client = await self._get_client()
         endpoint = self._get_api_endpoint()
         request_body = self._build_request_body(messages, stream)
@@ -800,6 +812,20 @@ class LLMClient:
                                 "owned_by": model.get("owned_by", ""),
                             })
                     return models
+
+            elif self.backend == "openrouter":
+                # OpenRouter: GET /models (base_url already includes /api/v1)
+                response = await client.get("/models")
+                if response.status_code == 200:
+                    data = response.json()
+                    models = []
+                    for model in data.get("data", []):
+                        model_id = model.get("id", "")
+                        models.append({
+                            "name": model_id,
+                            "owned_by": model.get("owned_by", ""),
+                        })
+                    return models
             
             return []
         except Exception as e:
@@ -817,7 +843,7 @@ async def list_models_for_backend(
     Creates a temporary client to fetch models.
     
     Args:
-        backend: Backend type (ollama, lmstudio, openai)
+        backend: Backend type (ollama, lmstudio, openai, openrouter)
         url: Backend URL
         api_key: API key (for OpenAI-compatible backends)
     

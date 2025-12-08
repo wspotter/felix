@@ -1,0 +1,25 @@
+{
+  "admin": {
+    "username": "admin",
+    "password_hash": "9a3d1eec9dd5a880365f9fd5ae9065d7$177658de7a5902a6d959e1ae451794636760e0f2bb8090f3f676b14a01b8c193",
+    "is_admin": true,
+    "created_at": "2025-12-06T23:32:48.336036",
+    "last_login": "2025-12-07T16:27:45.494562",
+    "settings": {
+      "voice": "amy",
+      "model": "qwen/qwen3-30b-a3b-2507",
+      "autoListen": true,
+      "showTimestamps": true,
+      "unloadOtherLLMs": true,
+      "volume": 80,
+      "voiceSpeed": 100,
+      "llmBackend": "lmstudio",
+      "ollamaUrl": "http://localhost:11434",
+      "lmstudioUrl": "http://localhost:1234",
+      "openaiUrl": "https://api.openai.com",
+      "openaiApiKey": "",
+      "openrouterUrl": "https://openrouter.ai/api/v1",
+      "openrouterApiKey": "felix2024"
+    }
+  }
+}

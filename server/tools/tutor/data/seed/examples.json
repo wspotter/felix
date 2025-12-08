@@ -1,0 +1,418 @@
+[
+  {
+    "id": "seed-001",
+    "query": "play some jazz",
+    "tool": "music_play",
+    "args": {"query": "jazz"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-002",
+    "query": "play miles davis",
+    "tool": "music_play",
+    "args": {"query": "miles davis"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-003",
+    "query": "put on some music",
+    "tool": "music_play",
+    "args": {"query": ""},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-004",
+    "query": "I want to hear some beethoven",
+    "tool": "music_play",
+    "args": {"query": "beethoven"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-005",
+    "query": "play something relaxing",
+    "tool": "music_play",
+    "args": {"query": "relaxing music"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-006",
+    "query": "pause the music",
+    "tool": "music_pause",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-007",
+    "query": "pause",
+    "tool": "music_pause",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-008",
+    "query": "stop playing",
+    "tool": "music_stop",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-009",
+    "query": "stop the music",
+    "tool": "music_stop",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-010",
+    "query": "next song",
+    "tool": "music_next",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-011",
+    "query": "skip this track",
+    "tool": "music_next",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-012",
+    "query": "skip",
+    "tool": "music_next",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-013",
+    "query": "previous song",
+    "tool": "music_previous",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-014",
+    "query": "go back a track",
+    "tool": "music_previous",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-015",
+    "query": "turn it up",
+    "tool": "music_volume",
+    "args": {"level": 80},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-016",
+    "query": "louder",
+    "tool": "music_volume",
+    "args": {"level": 80},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-017",
+    "query": "volume down",
+    "tool": "music_volume",
+    "args": {"level": 40},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-018",
+    "query": "volume 50",
+    "tool": "music_volume",
+    "args": {"level": 50},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-019",
+    "query": "what's playing",
+    "tool": "music_now_playing",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-020",
+    "query": "what song is this",
+    "tool": "music_now_playing",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-021",
+    "query": "what's the weather",
+    "tool": "get_weather",
+    "args": {"location": "here"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-022",
+    "query": "what's the weather like today",
+    "tool": "get_weather",
+    "args": {"location": "here"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-023",
+    "query": "is it going to rain",
+    "tool": "get_weather",
+    "args": {"location": "here"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-024",
+    "query": "temperature in austin",
+    "tool": "get_weather",
+    "args": {"location": "austin"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-025",
+    "query": "what's the temp outside",
+    "tool": "get_weather",
+    "args": {"location": "here"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-026",
+    "query": "weather forecast for new york",
+    "tool": "get_weather",
+    "args": {"location": "new york"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-027",
+    "query": "search for python tutorials",
+    "tool": "web_search",
+    "args": {"query": "python tutorials"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-028",
+    "query": "google best restaurants nearby",
+    "tool": "web_search",
+    "args": {"query": "best restaurants nearby"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-029",
+    "query": "look up how to cook pasta",
+    "tool": "web_search",
+    "args": {"query": "how to cook pasta"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-030",
+    "query": "find information about mars",
+    "tool": "web_search",
+    "args": {"query": "mars planet information"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-031",
+    "query": "can you look up the capital of france",
+    "tool": "web_search",
+    "args": {"query": "capital of france"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-032",
+    "query": "remember that I like coffee",
+    "tool": "remember",
+    "args": {"content": "user likes coffee", "importance": 5},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-033",
+    "query": "save this for later: meeting at 3pm",
+    "tool": "remember",
+    "args": {"content": "meeting at 3pm", "importance": 7},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-034",
+    "query": "don't forget my favorite color is blue",
+    "tool": "remember",
+    "args": {"content": "user's favorite color is blue", "importance": 5},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-035",
+    "query": "add to memory: I'm allergic to peanuts",
+    "tool": "remember",
+    "args": {"content": "user is allergic to peanuts", "importance": 9},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-036",
+    "query": "what did I tell you yesterday",
+    "tool": "recall",
+    "args": {"query": "yesterday"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-037",
+    "query": "do you remember my favorite color",
+    "tool": "recall",
+    "args": {"query": "favorite color"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-038",
+    "query": "what do you know about me",
+    "tool": "recall",
+    "args": {"query": "user preferences"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-039",
+    "query": "search my memories for recipes",
+    "tool": "recall",
+    "args": {"query": "recipes"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-040",
+    "query": "what time is it",
+    "tool": "get_current_time",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-041",
+    "query": "current time",
+    "tool": "get_current_time",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-042",
+    "query": "what's today's date",
+    "tool": "get_current_time",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-043",
+    "query": "what day is it",
+    "tool": "get_current_time",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-044",
+    "query": "tell me a joke",
+    "tool": "tell_joke",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-045",
+    "query": "make me laugh",
+    "tool": "tell_joke",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-046",
+    "query": "say something funny",
+    "tool": "tell_joke",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-047",
+    "query": "search the knowledge base for mayors",
+    "tool": "knowledge_search",
+    "args": {"query": "mayors"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-048",
+    "query": "what do you know about willowbrook",
+    "tool": "knowledge_search",
+    "args": {"query": "willowbrook"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-049",
+    "query": "search local knowledge for city council",
+    "tool": "knowledge_search",
+    "args": {"query": "city council"},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-050",
+    "query": "what tools do you have",
+    "tool": "list_available_tools",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-051",
+    "query": "what can you do",
+    "tool": "list_available_tools",
+    "args": {},
+    "success": true,
+    "source": "manual"
+  },
+  {
+    "id": "seed-052",
+    "query": "help with music tools",
+    "tool": "get_tool_help",
+    "args": {"tool_name": "music"},
+    "success": true,
+    "source": "manual"
+  }
+]
