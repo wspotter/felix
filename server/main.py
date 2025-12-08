@@ -1,6 +1,9 @@
 """
 Main FastAPI server for Voice Agent.
-Production-ready with AMD MI50 GPU acceleration.
+Production-ready with GPU acceleration.
+
+⚠️ NOTE: If executing MERGE_INSTRUCTIONS_FOR_LLM.md, follow only that file.
+Hardware-specific references in this file are for documentation only.
 """
 import asyncio
 import json

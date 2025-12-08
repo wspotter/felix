@@ -1,5 +1,10 @@
 # Voice Agent Architecture
 
+⚠️ **IGNORE THIS FILE** if you are executing `MERGE_INSTRUCTIONS_FOR_LLM.md` - follow only that file.  
+This is historical documentation for the AMD server - not relevant for the merge task.
+
+---
+
 This document describes the technical architecture of the Voice Agent system.
 
 ## System Overview

@@ -1,5 +1,10 @@
 # Development Guide
 
+⚠️ **IGNORE THIS FILE** if you are executing `MERGE_INSTRUCTIONS_FOR_LLM.md` - follow only that file.  
+This is historical documentation for the AMD server - not relevant for the merge task.
+
+---
+
 This guide covers setting up and developing the Voice Agent project.
 
 ## Prerequisites

@@ -3,7 +3,7 @@
  * Provides offline caching for the PWA shell
  */
 
-const CACHE_NAME = 'voice-agent-v3';
+const CACHE_NAME = 'voice-agent-v6';
 const STATIC_ASSETS = [
     '/',
     '/static/style.css',

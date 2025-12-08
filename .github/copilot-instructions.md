@@ -1,8 +1,10 @@
 # Voice Agent - AI Coding Instructions
 
+⚠️ **IMPORTANT FOR MERGE TASK**: If you're executing `MERGE_INSTRUCTIONS_FOR_LLM.md`, follow ONLY that file. This document is general reference.
+
 ## Architecture Overview
 
-Real-time voice assistant with barge-in (interrupt) support, running fully locally on AMD MI50 GPUs via ROCm:
+Real-time voice assistant with barge-in (interrupt) support, running fully locally with GPU acceleration:
 
 ```
 Browser (Vanilla JS) ←→ WebSocket ←→ FastAPI Server
@@ -103,12 +105,12 @@ pytest tests/ -v      # Run pytest
 
 | Component | Binary/Service | Notes |
 |-----------|---------------|-------|
-| STT | `whisper.cpp/build/bin/whisper-cli` | Built with `GGML_HIP=1` for ROCm |
-| LLM | Ollama at `:11434` | Supports OpenAI-compatible backends |
+| STT | `whisper.cpp/build/bin/whisper-cli` | GPU-accelerated (CUDA or ROCm depending on server) |
+| LLM | Ollama/LM Studio at `:11434` | Supports OpenAI-compatible backends |
 | TTS | `piper/piper/piper` | Voices: `amy`, `lessac`, `ryan` |
 | VAD | Silero (PyTorch) | Lazy-loaded singleton |
 
-GPU mapping: 0=RX6600 (display), 1=MI50#1 (STT), 2=MI50#2 (LLM)
+**Note:** GPU configuration varies by server (NVIDIA CUDA or AMD ROCm). Check `.env` for device settings.
 
 ## Related MCP Servers
 
