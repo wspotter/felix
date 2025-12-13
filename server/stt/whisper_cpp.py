@@ -1,6 +1,6 @@
 """
-STT using whisper.cpp with AMD ROCm/HIP acceleration.
-Production-ready wrapper for MI50 GPUs.
+STT using whisper.cpp with GPU acceleration (NVIDIA CUDA or AMD ROCm/HIP).
+Production-ready wrapper for GPU usage.
 """
 
 import asyncio
@@ -24,16 +24,16 @@ MODELS_DIR = WHISPER_CPP_DIR / "models"
 
 class WhisperCppSTT:
     """
-    Whisper.cpp STT with AMD ROCm GPU acceleration.
-    
-    Uses the compiled whisper-cli binary with hipBLAS support
-    for fast inference on MI50 GPUs.
+    Whisper.cpp STT with GPU acceleration (CUDA for NVIDIA, ROCm for AMD).
+
+    Uses the compiled whisper-cli binary with platform-specific BLAS support
+    for fast inference on GPU hardware.
     """
     
     def __init__(
         self,
         model: str = "ggml-large-v3-turbo.bin",
-        gpu_device: int = 1,  # MI50 is device 1 (0 is RX 6600 XT)
+    gpu_device: int = 1,  # GPU device index (0 is first GPU)
         language: str = "en",
         threads: int = 8,
     ):
@@ -42,7 +42,7 @@ class WhisperCppSTT:
         
         Args:
             model: Model filename in models directory
-            gpu_device: HIP device index (1 or 2 for MI50s)
+            gpu_device: GPU device index (1 or 2)
             language: Language code
             threads: CPU threads for non-GPU ops
         """
@@ -120,9 +120,15 @@ class WhisperCppSTT:
                 "-np",  # No prints (quieter output)
             ]
             
-            # Set environment for MI50 GPU
+            # Set environment for GPU device based on configured whisper device
             env = os.environ.copy()
-            env["HIP_VISIBLE_DEVICES"] = str(self.gpu_device)
+            device_pref = getattr(settings, 'whisper_device', '')
+            if isinstance(device_pref, str):
+                dp = device_pref.lower()
+                if dp.startswith("cuda"):
+                    env["CUDA_VISIBLE_DEVICES"] = str(self.gpu_device)
+                elif dp in ("rocm", "hip"):
+                    env["HIP_VISIBLE_DEVICES"] = str(self.gpu_device)
             
             # Run in thread pool to avoid blocking event loop
             loop = asyncio.get_event_loop()
@@ -181,7 +187,7 @@ class WhisperCppSTT:
             # Cleanup temp file
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
     
     async def transcribe_chunks(

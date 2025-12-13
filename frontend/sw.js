@@ -6,7 +6,9 @@
 const CACHE_NAME = 'voice-agent-v6';
 const STATIC_ASSETS = [
     '/',
+    '/admin.html',           // admin dashboard
     '/static/style.css',
+    '/static/admin.js',      // admin UI
     '/static/app.module.js',
     '/static/audio.module.js',
     '/static/utils.js',

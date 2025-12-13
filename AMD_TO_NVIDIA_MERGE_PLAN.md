@@ -47,7 +47,7 @@ git show 9707dad:frontend/static/style.css > /tmp/amd-style.css
 **Manually merge into:** `frontend/static/style.css`
 
 #### 1.3 OpenRouter Dropdown
-**Already present** in `frontend/index.html` line 441 - verify it appears after cache clear
+**Already present** in `frontend/index.html` line 441 - verified after cache clear
 
 ---
 
@@ -79,6 +79,8 @@ mkdir -p data
 - `data/.gitkeep` - Copy from AMD commit
 - `data/users.json` - Empty array `[]` initially
 - `data/sessions.json` - Empty object `{}` initially
+
+**Status:** Created `data/.gitkeep`, `data/users.json`, and `data/sessions.json` in repo. Migration script optional.
 
 **From AMD commit:**
 ```bash
@@ -126,6 +128,7 @@ git show 9707dad:frontend/admin.html > frontend/admin.html
 git show 9707dad:frontend/static/admin.js > frontend/static/admin.js
 git show 9707dad:frontend/static/admin.css > frontend/static/admin.css
 ```
+**Status:** `frontend/admin.html` and `frontend/static/admin.js` copied. `admin.css` was not present in AMD commit and was skipped.
 
 **Update service worker to cache admin files:**
 ```javascript
@@ -169,6 +172,8 @@ diff server/session.py /tmp/amd-session.py
 
 **Action:** Manually merge new fields/methods, keep existing logic intact
 
+**Status:** `server/session.py` identical to AMD version; no changes required.
+
 #### 3.6 Main Server Updates
 
 **File:** `server/main.py`
@@ -186,6 +191,8 @@ diff server/main.py /tmp/amd-main.py
 - Health check endpoints
 
 **Critical:** Verify no AMD-specific imports or GPU device hardcoding
+
+**Status:** Admin endpoints and telemetry merged into `server/main.py`. MI50 references removed where found; session persistence hooks implemented and loaded on startup, background persistence, and atomic writes added. Tool Tutor integration completed. Tests updated and passed.
 
 ---
 

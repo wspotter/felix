@@ -1,9 +1,7 @@
 """
 Tests for session management.
 """
-import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 
 class TestSessionState:
@@ -76,7 +74,7 @@ class TestSession:
         
         # Check that should_stop method exists and works
         assert hasattr(session, 'should_stop')
-        assert session.should_stop() == False
+        assert not session.should_stop()
     
     def test_session_interrupt(self):
         """Test interrupt functionality."""
@@ -87,7 +85,7 @@ class TestSession:
         
         session.interrupt()
         
-        assert session.should_stop() == True
+        assert session.should_stop()
         assert session.state == SessionState.INTERRUPTED
     
     def test_session_has_lock(self):
@@ -146,13 +144,47 @@ class TestSessionStateTransitions:
     
     def test_reset_stop_flag(self):
         """Test that reset_stop_flag works."""
-        from server.session import Session, SessionState
+        from server.session import Session
         
         session = Session()
         session.interrupt()
         
-        assert session.should_stop() == True
+        assert session.should_stop()
         
         session.reset_stop_flag()
         
-        assert session.should_stop() == False
+        assert not session.should_stop()
+
+
+def test_session_persistence_roundtrip(tmp_path, monkeypatch):
+    """Test that sessions saved to disk are restored on load."""
+    from server.main import manager, save_sessions_to_disk, load_sessions_from_disk
+    from server.session import Session, SessionState
+    from server.config import settings
+
+    # Use a clean test data directory
+    monkeypatch.setattr(settings, 'data_dir', str(tmp_path))
+
+    # Ensure a fresh starting state
+    manager.sessions.clear()
+
+    # Create a session and populate with messages
+    s = Session()
+    s.set_state(SessionState.LISTENING)
+    s.conversation_history.add_user_message("Hello from test")
+    # Add to manager sessions
+    manager.sessions['testclient'] = s
+
+    # Persist to disk
+    save_sessions_to_disk()
+
+    # Clear in-memory sessions
+    manager.sessions.clear()
+
+    # Load from disk and verify
+    load_sessions_from_disk()
+    assert 'testclient' in manager.sessions
+    restored = manager.sessions['testclient']
+    assert restored.state == SessionState.LISTENING
+    msgs = restored.conversation_history.get_messages()
+    assert any(m['role'] == 'user' and 'Hello from test' in m['content'] for m in msgs)

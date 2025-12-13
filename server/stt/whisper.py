@@ -1,6 +1,6 @@
 """
 Speech-to-Text using faster-whisper
-GPU-accelerated transcription optimized for AMD MI50.
+GPU-accelerated transcription (CUDA or ROCm depending on environment).
 """
 import asyncio
 from typing import Optional

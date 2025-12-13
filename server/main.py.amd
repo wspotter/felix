@@ -1,22 +1,18 @@
 """
 Main FastAPI server for Voice Agent.
-Production-ready with GPU acceleration.
-
-⚠️ NOTE: If executing MERGE_INSTRUCTIONS_FOR_LLM.md, follow only that file.
-Hardware-specific references in this file are for documentation only.
+Production-ready with AMD MI50 GPU acceleration.
 """
 import asyncio
 import json
-import os
 import base64
+import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-import time
-from collections import deque
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import structlog
@@ -24,13 +20,11 @@ import structlog
 from .config import settings
 from .session import Session, SessionState
 from .audio.vad import create_vad, SileroVAD
-from .stt.whisper import get_stt  # faster-whisper with CUDA
+from .stt.whisper_cpp import get_stt  # faster-whisper with CUDA
 from .llm.ollama import get_llm_client, list_models_for_backend
 from .tts.piper_tts import get_tts, list_voices  # Piper local TTS
 from .tools import tool_registry, tool_executor
-from .tools.tutor.tutor import create_tool_tutor
 from .tracing import init_tracing, get_tracer, start_stt_span, start_llm_span, start_tool_span, start_tts_span
-from .auth import get_auth_manager
 from .comfy_service import initialize_comfy_service, shutdown_comfy_service, get_comfy_service
 
 
@@ -57,9 +51,6 @@ ADMIN_LOG_LIMIT = 200
 admin_events: deque[dict] = deque(maxlen=ADMIN_EVENT_LIMIT)
 admin_logs: deque[dict] = deque(maxlen=ADMIN_LOG_LIMIT)
 
-# Tool Tutor (optional)
-tool_tutor = None
-
 
 def record_event(event_type: str, **payload) -> None:
     admin_events.append({
@@ -78,41 +69,11 @@ def record_log(level: str, message: str, **payload) -> None:
     })
 
 
-def require_admin(
-    token: str = Header(default=None, alias="X-Admin-Token"),
-    authorization: Optional[str] = Header(default=None, alias="Authorization")
-) -> None:
-    # Mixed-mode admin protection. If multi-user auth is enabled, accept Bearer tokens
-    if settings.enable_auth:
-        # Try Authorization header (Bearer) first
-        # FastAPI will pass Authorization header via Header param, but we read 'token' alias here for X-Admin-Token
-        # So handle both: Authorization: Bearer <token> and X-Admin-Token header
-        # Prefer Authorization header when provided
-        if authorization:
-            # Accept 'Bearer <token>' or bare token
-            if authorization.lower().startswith("bearer "):
-                auth_token = authorization.split(" ", 1)[1]
-            else:
-                auth_token = authorization
-            # If explicit X-Admin-Token header not provided, use Authorization token
-            if not token:
-                token = auth_token
-    # fallback; the header name is token alias X-Admin-Token passed via the parameter
-        # Note: We cannot easily request Authorization header here in the signature because param name must be valid
-        # So check token header first and fall back to env-based admin token
-        if not token:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        username = get_auth_manager().validate_token(token)
-        if not username:
-            raise HTTPException(status_code=401, detail="Invalid auth token")
-        if not get_auth_manager().is_admin(username):
-            raise HTTPException(status_code=403, detail="Admin privileges required")
-        return
-    else:
-        if not settings.admin_token:
-            raise HTTPException(status_code=401, detail="Admin access disabled")
-        if token != settings.admin_token:
-            raise HTTPException(status_code=401, detail="Invalid admin token")
+def require_admin(token: str = Header(default=None, alias="X-Admin-Token")) -> None:
+    if not settings.admin_token:
+        raise HTTPException(status_code=401, detail="Admin access disabled")
+    if token != settings.admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
 @asynccontextmanager
@@ -121,8 +82,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Voice Agent server...")
     record_event("startup")
     
-    # Initialize STT (faster-whisper with CUDA)
-    logger.info("Loading Whisper model on CUDA GPU...")
+    # Initialize STT (whisper.cpp with ROCm)
+    logger.info("Loading Whisper model with ROCm...")
     await get_stt()
     logger.info("Whisper ready", model=settings.whisper_model)
     
@@ -147,47 +108,6 @@ async def lifespan(app: FastAPI):
         logger.info("ComfyUI service initialized", url=comfy_service.base_url)
     else:
         logger.warning("ComfyUI service not available (image generation tools will be disabled)")
-
-    # Initialize Tool Tutor if enabled
-    global tool_tutor
-    try:
-        if settings.enable_tool_tutor:
-            tool_tutor = create_tool_tutor(
-                settings=None,
-                enabled=settings.enable_tool_tutor,
-                data_dir=settings.data_dir,
-                confidence_threshold=settings.tool_confidence_threshold,
-                example_count=3,
-                learning_enabled=True,
-            )
-        else:
-            tool_tutor = None
-    except Exception as e:
-        logger.error("Failed to initialize tool_tutor", error=str(e))
-        tool_tutor = None
-    # Restore persisted sessions from disk (best effort)
-    try:
-        load_sessions_from_disk()
-        logger.info("Loaded persisted sessions from disk", path=str(_sessions_file_path()))
-    except Exception:
-        logger.exception("Failed to load persisted sessions from disk")
-    
-    # Start background session persistence worker if configured
-    session_persistence_task = None
-    try:
-        interval = getattr(settings, 'session_save_interval', 0)
-        if isinstance(interval, int) and interval > 0:
-            async def _session_persistence_worker():
-                while True:
-                    await asyncio.sleep(interval)
-                    try:
-                        await save_sessions_to_disk()
-                    except Exception:
-                        logger.exception("Background session saver failed")
-            session_persistence_task = asyncio.create_task(_session_persistence_worker())
-            logger.info("Started background session persistence", interval=interval)
-    except Exception:
-        logger.exception("Failed to start background session persistence")
     
     yield
     
@@ -198,19 +118,6 @@ async def lifespan(app: FastAPI):
     if comfy_service:
         logger.info("Shutting down ComfyUI service...")
         await shutdown_comfy_service()
-    # Cancel background session persistence task
-    if session_persistence_task:
-        try:
-            session_persistence_task.cancel()
-            await asyncio.wait([session_persistence_task], timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-
-    # Persist sessions before exit
-    try:
-        await save_sessions_to_disk()
-    except Exception:
-        logger.exception("Failed to save sessions on shutdown")
 
 
 # Create FastAPI app
@@ -232,7 +139,7 @@ async def index():
 
 
 @app.get("/admin.html")
-async def admin() -> FileResponse:
+async def admin():
     """Serve the admin dashboard."""
     return FileResponse(frontend_path / "admin.html")
 
@@ -265,21 +172,13 @@ async def health():
             device_label = f"CUDA (GPU {settings.whisper_gpu_device})"
         stt_backend = f"{stt_backend} ({device_label})"
 
-
     llm_backend = settings.llm_backend
-    try:
-        if llm_backend == "ollama" and settings.ollama_model:
-            llm_backend = f"ollama ({settings.ollama_model})"
-            # Only check Ollama if selected, and only log errors if selected
-        elif llm_backend == "lmstudio":
-            llm_backend = "lmstudio"
-        elif llm_backend == "openai":
-            llm_backend = "openai-compatible"
-    except Exception as e:
-        # Only log a warning if the selected backend is the one that failed
-        if settings.llm_backend == "ollama":
-            logger.warning("LLM backend unavailable or error during backend check", backend=llm_backend, error=str(e))
-        # Otherwise, suppress the error entirely
+    if llm_backend == "ollama" and settings.ollama_model:
+        llm_backend = f"ollama ({settings.ollama_model})"
+    elif llm_backend == "lmstudio":
+        llm_backend = "lmstudio"
+    elif llm_backend == "openai":
+        llm_backend = "openai-compatible"
 
     tts_backend = settings.tts_engine
     if tts_backend == "piper" and settings.tts_voice:
@@ -304,6 +203,53 @@ async def health():
         "tools_registered": len(tool_registry.list_tools()),
         "comfyui": comfy_status,
     }
+
+
+@app.get("/api/voices")
+async def get_voices():
+    """Get available TTS voices."""
+    return {"voices": list_voices()}
+
+
+@app.get("/api/models")
+async def get_models(
+    backend: str = "ollama",
+    url: str = None,
+    api_key: str = None
+):
+    """
+    Get available LLM models for a backend.
+    
+    Args:
+        backend: Backend type (ollama, lmstudio, openai, openrouter)
+        url: Backend URL (uses defaults if not provided)
+        api_key: API key (for OpenAI-compatible backends)
+    """
+    # Default URLs for each backend
+    default_urls = {
+        "ollama": "http://localhost:11434",
+        "lmstudio": "http://localhost:1234",
+        "openai": "https://api.openai.com",
+        "openrouter": "https://openrouter.ai/api/v1",
+    }
+    
+    # Validate backend
+    if backend not in default_urls:
+        return {"models": [], "error": f"Invalid backend: {backend}"}
+    
+    # Use provided URL or default
+    backend_url = url or default_urls[backend]
+    
+    try:
+        models = await list_models_for_backend(
+            backend=backend,
+            url=backend_url,
+            api_key=api_key
+        )
+        return {"models": models, "backend": backend}
+    except Exception as e:
+        logger.error("Failed to list models", backend=backend, error=str(e))
+        return {"models": [], "error": str(e)}
 
 
 def _session_snapshot(client_id: str, session: Session) -> dict:
@@ -352,86 +298,6 @@ async def admin_logs_feed(_: None = Depends(require_admin)):
     return {"logs": list(admin_logs)}
 
 
-@app.post("/api/auth/login")
-async def api_login(payload: dict):
-    """Simple login endpoint that returns a session token.
-
-    Request body: {"username": "user", "password": "pass"}
-    """
-    if not settings.enable_auth:
-        raise HTTPException(status_code=400, detail="Multi-user auth disabled")
-    username = payload.get("username")
-    password = payload.get("password")
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="username and password required")
-    token, msg = get_auth_manager().login(username, password)
-    if token is None:
-        raise HTTPException(status_code=401, detail=msg)
-    return {"token": token, "message": msg}
-
-
-@app.post("/api/auth/logout")
-async def api_logout(payload: dict):
-    """Invalidate a token: {"token": "..."}"""
-    if not settings.enable_auth:
-        raise HTTPException(status_code=400, detail="Multi-user auth disabled")
-    token = payload.get("token")
-    if not token:
-        raise HTTPException(status_code=400, detail="token required")
-    success = get_auth_manager().logout(token)
-    return {"success": success}
-
-
-@app.get("/api/voices")
-async def get_voices():
-    """Get available TTS voices."""
-    return {"voices": list_voices()}
-
-
-@app.get("/api/models")
-async def get_models(
-    backend: str = "ollama",
-    url: str = None,
-    api_key: str = None
-):
-    """
-    Get available LLM models for a backend.
-    
-    Args:
-        backend: Backend type (ollama, lmstudio, openai)
-        url: Backend URL (uses defaults if not provided)
-        api_key: API key (for OpenAI-compatible backends)
-    """
-    # Default URLs for each backend
-    default_urls = {
-        "ollama": "http://localhost:11434",
-        "lmstudio": "http://localhost:1234",
-        "openai": "https://api.openai.com",
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
-    
-    # Validate backend
-    if backend not in default_urls:
-        return {"models": [], "error": f"Invalid backend: {backend}"}
-    
-    # Use provided URL or default
-    backend_url = url or default_urls[backend]
-    
-    try:
-        models = await list_models_for_backend(
-            backend=backend,
-            url=backend_url,
-            api_key=api_key
-        )
-        return {"models": models, "backend": backend}
-    except Exception as e:
-        # Only log a warning if the user is actually requesting this backend
-        if backend == settings.llm_backend:
-            logger.warning("Failed to list models (backend may be down, skipping)", backend=backend, error=str(e))
-        # Otherwise, suppress the error entirely
-        return {"models": [], "error": f"Backend unavailable: {backend}. {str(e)}"}
-
-
 class ConnectionManager:
     """Manages WebSocket connections and their sessions."""
     
@@ -444,17 +310,7 @@ class ConnectionManager:
         self.active_connections[client_id] = websocket
         self.sessions[client_id] = Session()
         logger.info("Client connected", client_id=client_id)
-        # Record admin event for new connection
-        try:
-            record_event("client_connected", client_id=client_id)
-        except Exception:
-            # Do not let telemetry failures block connection handling
-            logger.exception("Failed to record client_connected event", client_id=client_id)
-        # Persist sessions (best effort, non-blocking)
-        try:
-            asyncio.create_task(save_sessions_to_disk())
-        except Exception:
-            logger.exception("Failed to persist sessions after connect", client_id=client_id)
+        record_event("client_connected", client_id=client_id)
     
     def disconnect(self, client_id: str):
         if client_id in self.active_connections:
@@ -463,11 +319,6 @@ class ConnectionManager:
             del self.sessions[client_id]
         logger.info("Client disconnected", client_id=client_id)
         record_event("client_disconnected", client_id=client_id)
-        # Persist sessions when a client disconnects (fire and forget)
-        try:
-            asyncio.create_task(save_sessions_to_disk())
-        except Exception:
-            logger.exception("Failed to persist sessions after disconnect", client_id=client_id)
     
     async def send_json(self, client_id: str, data: dict):
         if client_id in self.active_connections:
@@ -521,83 +372,6 @@ def get_vad() -> SileroVAD:
             use_onnx=False,
         )
     return _global_vad
-
-
-def _sessions_file_path() -> Path:
-    return Path(settings.data_dir).resolve() / "sessions.json"
-
-
-def load_sessions_from_disk() -> None:
-    """Load sessions from data/sessions.json and restore conversation history and state."""
-    try:
-        path = _sessions_file_path()
-        if not path.exists():
-            return
-        with open(path, 'r') as f:
-            data = json.load(f)
-        for cid, sdata in data.items():
-            try:
-                sess = Session()
-                # restore basic fields
-                state_name = sdata.get('state')
-                if state_name in SessionState.__members__:
-                    sess.state = SessionState[state_name]
-                sess.last_activity = sdata.get('last_activity', time.time())
-                sess.speaking_started = sdata.get('speaking_started', 0.0)
-
-                # restore conversation
-                messages = sdata.get('messages', [])
-                # Clear any defaults
-                sess.conversation_history.clear()
-                for msg in messages:
-                    role = msg.get('role')
-                    content = msg.get('content', '')
-                    name = msg.get('name')
-                    tool_call_id = msg.get('tool_call_id')
-                    tool_calls = msg.get('tool_calls')
-                    if role == 'user':
-                        sess.conversation_history.add_user_message(content)
-                    elif role == 'assistant':
-                        sess.conversation_history.add_assistant_message(content, tool_calls=tool_calls)
-                    elif role == 'tool':
-                        sess.conversation_history.add_tool_result(tool_call_id or '', name or '', content)
-                manager.sessions[cid] = sess
-            except Exception:
-                logger.exception("Failed to restore session", client_id=cid)
-    except Exception:
-        logger.exception("Failed to load sessions.json")
-
-
-def _save_sessions_to_disk_sync() -> None:
-    """Synchronous implementation of session persistence (called via asyncio.to_thread)."""
-    try:
-        path = _sessions_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        out = {}
-        for cid, sess in manager.sessions.items():
-            try:
-                out[cid] = {
-                    'state': sess.state.name,
-                    'last_activity': sess.last_activity,
-                    'speaking_started': sess.speaking_started,
-                    'messages': sess.conversation_history.get_messages(include_system=True),
-                }
-            except Exception:
-                logger.exception("Failed to serialize session", client_id=cid)
-        # Write atomically: write to tmp then replace
-        tmp_path = path.with_suffix('.tmp')
-        with open(tmp_path, 'w') as f:
-            json.dump(out, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        logger.exception("Failed to save sessions.json")
-
-
-async def save_sessions_to_disk() -> None:
-    """Save simplified sessions to data/sessions.json (async, non-blocking via thread pool)."""
-    await asyncio.to_thread(_save_sessions_to_disk_sync)
 
 
 async def process_audio_pipeline(
@@ -727,7 +501,7 @@ async def process_audio_pipeline(
                 pipeline_span.set_attribute("client_id", client_id)
                 pipeline_span.set_attribute("audio_bytes", len(audio_bytes))
                 
-                # Transcribe using whisper.cpp (device selected by settings)
+                # Transcribe using whisper.cpp on MI50
                 session.set_state(SessionState.PROCESSING)
                 await manager.send_json(client_id, {"type": "state", "state": "processing"})
                 
@@ -771,23 +545,9 @@ async def process_audio_pipeline(
                 full_response = ""
                 
                 try:
-                    # Prepare prompt using Tool Tutor (if enabled) and send custom messages to LLM
-                    messages = session.conversation_history.get_messages(include_system=False)
-                    system_prompt = session.conversation_history.system_prompt
-                    if tool_tutor:
-                        try:
-                            enhanced_prompt, _ = tool_tutor.prepare_prompt(transcript, system_prompt, context=messages)
-                        except Exception:
-                            # Backward-compatible call for older interface
-                            enhanced_prompt = tool_tutor.prepare_prompt(transcript, system_prompt)
-                    else:
-                        enhanced_prompt = system_prompt
-
-                    llm_messages = [{"role": "system", "content": enhanced_prompt}] + messages
-
                     with start_llm_span(model, len(session.conversation_history.get_messages()), bool(tool_registry.list_tools())) as llm_span:
                         async for chunk in ollama.chat(
-                            llm_messages
+                            session.conversation_history.get_messages()
                         ):
                             if chunk["type"] == "text":
                                 full_response += chunk["content"]
@@ -800,25 +560,6 @@ async def process_audio_pipeline(
                                 tool_call_id = chunk.get("id", f"call_{chunk['name']}")
                                 tool_name = chunk["name"]
                                 arguments = chunk["arguments"]
-                                # Let tutor process the tool call decision (may override tool or args)
-                                tutor_decision = None
-                                if tool_tutor:
-                                    try:
-                                        # Provide last user message as query and accumulated response as context
-                                        tutor_decision = tool_tutor.process_tool_call(
-                                            transcript,
-                                            full_response,
-                                            context=llm_messages
-                                        )
-                                    except Exception:
-                                        tutor_decision = None
-                                if tutor_decision:
-                                    # Override if different
-                                    if tutor_decision.tool and tutor_decision.tool != tool_name:
-                                        logger.info("tool_call_overridden_by_tutor", original=tool_name, new=tutor_decision.tool)
-                                        tool_name = tutor_decision.tool
-                                    if tutor_decision.args:
-                                        arguments = tutor_decision.args
                             
                                 logger.info("tool_call_received", tool=tool_name, args=arguments)
                             
@@ -863,26 +604,12 @@ async def process_audio_pipeline(
                                     session.conversation_history.add_tool_result(
                                         tool_call_id, tool_name, result_text
                                     )
-                                # Notify tutor about result for learning
-                                if tool_tutor:
-                                    try:
-                                        # If tutor_decision is None, build a ToolCall record
-                                        from server.tools.tutor.interfaces import ToolCall as TutorToolCall
-                                        tc = tutor_decision if tutor_decision is not None else TutorToolCall(tool=tool_name, args=arguments, confidence=1.0, raw_response=str(arguments))
-                                        tool_tutor.record_result(
-                                            transcript,
-                                            tc,
-                                            result.success,
-                                            None if result.success else getattr(result, 'error', None)
-                                        )
-                                    except Exception:
-                                        pass
                     
-                    llm_span.set_attribute("response_length", len(full_response))
+                        llm_span.set_attribute("response_length", len(full_response))
             
                         # If no text response but tools were called, get follow-up response from LLM
                         # This lets the LLM generate a natural language response using the tool results
-                    if not full_response and session.conversation_history.get_messages():
+                        if not full_response and session.conversation_history.get_messages():
                             last_msg = session.conversation_history.get_messages()[-1]
                             if last_msg.get("role") == "tool":
                                 logger.info("Getting follow-up response after tool execution")
@@ -902,6 +629,7 @@ async def process_audio_pipeline(
                 except Exception as llm_error:
                     error_msg = str(llm_error)
                     logger.error("LLM error", error=error_msg, model=model)
+                    record_log("error", "LLM error", client_id=client_id, error=error_msg, model=model)
                     
                     # Send user-friendly error
                     if "404" in error_msg or "not found" in error_msg.lower():
@@ -966,14 +694,10 @@ async def process_audio_pipeline(
                 # Stay in SPEAKING state - client will send playback_done when finished
                 # This allows interrupt detection while audio plays on client
                 logger.info("Audio sent, waiting for playback", client_id=client_id)
-                # Persist sessions after completing a spoken response (fire and forget)
-                try:
-                    asyncio.create_task(save_sessions_to_disk())
-                except Exception:
-                    logger.exception("Failed to persist sessions after pipeline")
         
     except Exception as e:
         logger.error("Pipeline error", error=str(e), client_id=client_id)
+        record_log("error", "Pipeline error", client_id=client_id, error=str(e))
         await manager.send_json(client_id, {
             "type": "error",
             "message": str(e)
@@ -1020,21 +744,9 @@ async def process_text_message(
                 full_response = ""
                 
                 try:
-                    messages = session.conversation_history.get_messages(include_system=False)
-                    system_prompt = session.conversation_history.system_prompt
-                    if tool_tutor:
-                        try:
-                            enhanced_prompt, _ = tool_tutor.prepare_prompt(text, system_prompt, context=messages)
-                        except Exception:
-                            enhanced_prompt = tool_tutor.prepare_prompt(text, system_prompt)
-                    else:
-                        enhanced_prompt = system_prompt
-
-                    llm_messages = [{"role": "system", "content": enhanced_prompt}] + messages
-
                     with start_llm_span(model, len(session.conversation_history.get_messages()), bool(tool_registry.list_tools())) as llm_span:
                         async for chunk in ollama.chat(
-                            llm_messages
+                            session.conversation_history.get_messages()
                         ):
                             if chunk["type"] == "text":
                                 full_response += chunk["content"]
@@ -1047,31 +759,14 @@ async def process_text_message(
                                 tool_call_id = chunk.get("id", f"call_{chunk['name']}")
                                 tool_name = chunk["name"]
                                 arguments = chunk["arguments"]
-                                # Let tutor process the tool call decision (may override tool or args)
-                                tutor_decision = None
-                                if tool_tutor:
-                                    try:
-                                        tutor_decision = tool_tutor.process_tool_call(
-                                            text,
-                                            full_response,
-                                            context=llm_messages
-                                        )
-                                    except Exception:
-                                        tutor_decision = None
-                                if tutor_decision:
-                                    if tutor_decision.tool and tutor_decision.tool != tool_name:
-                                        logger.info("tool_call_overridden_by_tutor", original=tool_name, new=tutor_decision.tool)
-                                        tool_name = tutor_decision.tool
-                                    if tutor_decision.args:
-                                        arguments = tutor_decision.args
-
+                                
                                 logger.info("tool_call_received", tool=tool_name, args=arguments)
-
+                                
                                 await manager.send_json(client_id, {
                                     "type": "tool_call",
                                     "tool": tool_name
                                 })
-
+                                
                                 # Execute tool with tracing
                                 with start_tool_span(tool_name, arguments) as tool_span:
                                     result = await tool_executor.execute(tool_name, arguments)
@@ -1104,19 +799,6 @@ async def process_text_message(
                                     session.conversation_history.add_tool_result(
                                         tool_call_id, tool_name, result_text
                                     )
-                                # Notify tutor about result
-                                if tool_tutor:
-                                    try:
-                                        from server.tools.tutor.interfaces import ToolCall as TutorToolCall
-                                        tc = tutor_decision if tutor_decision is not None else TutorToolCall(tool=tool_name, args=arguments, confidence=1.0, raw_response=str(arguments))
-                                        tool_tutor.record_result(
-                                            text,
-                                            tc,
-                                            result.success,
-                                            None if result.success else getattr(result, 'error', None)
-                                        )
-                                    except Exception:
-                                        pass
                         
                         llm_span.set_attribute("response_length", len(full_response))
                         
@@ -1428,6 +1110,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(client_id)
     except Exception as e:
         logger.error("WebSocket error", error=str(e), client_id=client_id)
+        record_log("error", "WebSocket error", client_id=client_id, error=str(e))
         manager.disconnect(client_id)
 
 

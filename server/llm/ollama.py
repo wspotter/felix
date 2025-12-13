@@ -16,7 +16,7 @@ from .conversation import ConversationHistory
 logger = structlog.get_logger()
 
 # Backend types
-BackendType = Literal["ollama", "lmstudio", "openai"]
+BackendType = Literal["ollama", "lmstudio", "openai", "openrouter"]
 
 
 def extract_json_tool_calls(text: str) -> list[dict]:
@@ -196,6 +196,8 @@ class LLMClient:
                 self.base_url = getattr(settings, 'lmstudio_url', 'http://localhost:1234')
             elif self.backend == "openai":
                 self.base_url = getattr(settings, 'openai_url', 'https://api.openai.com')
+            elif self.backend == "openrouter":
+                self.base_url = getattr(settings, 'openrouter_url', 'https://openrouter.ai/api/v1')
             else:  # ollama
                 self.base_url = getattr(settings, 'ollama_url', 'http://localhost:11434')
             self.base_url = self.base_url.rstrip("/")
@@ -254,7 +256,7 @@ class LLMClient:
         if self._client is None:
             headers = {}
             # Add API key for OpenAI-compatible backends
-            if self.api_key and self.backend in ("openai", "lmstudio"):
+            if self.api_key and self.backend in ("openai", "lmstudio", "openrouter"):
                 headers["Authorization"] = f"Bearer {self.api_key}"
             
             self._client = httpx.AsyncClient(
@@ -800,6 +802,24 @@ class LLMClient:
                                 "owned_by": model.get("owned_by", ""),
                             })
                     return models
+            
+            elif self.backend == "openrouter":
+                # OpenRouter: GET /models endpoint (base URL already includes /api/v1)
+                response = await client.get("/models")
+                logger.info("openrouter_response", status_code=response.status_code, url=f"{self.base_url}/models")
+                if response.status_code == 200:
+                    data = response.json()
+                    models = []
+                    for model in data.get("data", []):
+                        model_id = model.get("id", "")
+                        models.append({
+                            "name": model_id,
+                            "owned_by": model.get("owned_by", ""),
+                        })
+                    logger.info("openrouter_models_count", count=len(models))
+                    return models
+                else:
+                    logger.error("openrouter_list_failed", status_code=response.status_code, response_text=response.text[:200])
             
             return []
         except Exception as e:

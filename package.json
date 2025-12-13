@@ -1,0 +1,14 @@
+{
+  "name": "felix-playwright",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:phase1": "playwright test tests/phase1.spec.js",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report"
+  }
+}

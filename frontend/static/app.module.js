@@ -134,10 +134,12 @@ class VoiceAgentApp {
             ollamaUrl: document.getElementById('ollamaUrl'),
             lmstudioUrl: document.getElementById('lmstudioUrl'),
             openaiUrl: document.getElementById('openaiUrl'),
+            openrouterUrl: document.getElementById('openrouterUrl'),
             apiKeyInput: document.getElementById('apiKeyInput'),
             ollamaUrlSetting: document.getElementById('ollamaUrlSetting'),
             lmstudioUrlSetting: document.getElementById('lmstudioUrlSetting'),
             openaiUrlSetting: document.getElementById('openaiUrlSetting'),
+            openrouterUrlSetting: document.getElementById('openrouterUrlSetting'),
             apiKeySetting: document.getElementById('apiKeySetting'),
             
             // Volume and speed sliders
@@ -399,6 +401,9 @@ class VoiceAgentApp {
         if (this.elements.openaiUrl) {
             this.elements.openaiUrl.value = settings.openaiUrl || 'https://api.openai.com';
         }
+        if (this.elements.openrouterUrl) {
+            this.elements.openrouterUrl.value = settings.openrouterUrl || 'https://openrouter.ai/api/v1';
+        }
         if (this.elements.apiKeyInput) {
             this.elements.apiKeyInput.value = settings.openaiApiKey || '';
         }
@@ -441,6 +446,7 @@ class VoiceAgentApp {
         this.elements.ollamaUrlSetting?.classList.add('hidden');
         this.elements.lmstudioUrlSetting?.classList.add('hidden');
         this.elements.openaiUrlSetting?.classList.add('hidden');
+        this.elements.openrouterUrlSetting?.classList.add('hidden');
         this.elements.apiKeySetting?.classList.add('hidden');
         
         // Show relevant settings based on backend
@@ -453,6 +459,10 @@ class VoiceAgentApp {
                 break;
             case 'openai':
                 this.elements.openaiUrlSetting?.classList.remove('hidden');
+                this.elements.apiKeySetting?.classList.remove('hidden');
+                break;
+            case 'openrouter':
+                this.elements.openrouterUrlSetting?.classList.remove('hidden');
                 this.elements.apiKeySetting?.classList.remove('hidden');
                 break;
         }
@@ -472,6 +482,10 @@ class VoiceAgentApp {
                 break;
             case 'openai':
                 url = this.elements.openaiUrl?.value || 'https://api.openai.com';
+                apiKey = this.elements.apiKeyInput?.value || '';
+                break;
+            case 'openrouter':
+                url = this.elements.openrouterUrl?.value || 'https://openrouter.ai/api/v1';
                 apiKey = this.elements.apiKeyInput?.value || '';
                 break;
         }
@@ -579,6 +593,7 @@ class VoiceAgentApp {
             ollamaUrl: this.elements.ollamaUrl?.value || 'http://localhost:11434',
             lmstudioUrl: this.elements.lmstudioUrl?.value || 'http://localhost:1234',
             openaiUrl: this.elements.openaiUrl?.value || 'https://api.openai.com',
+            openrouterUrl: this.elements.openrouterUrl?.value || 'https://openrouter.ai/api/v1',
             openaiApiKey: this.elements.apiKeyInput?.value || '',
         };
         
@@ -607,6 +622,7 @@ class VoiceAgentApp {
                 ollamaUrl: newSettings.ollamaUrl,
                 lmstudioUrl: newSettings.lmstudioUrl,
                 openaiUrl: newSettings.openaiUrl,
+                openrouterUrl: newSettings.openrouterUrl,
                 openaiApiKey: newSettings.openaiApiKey,
             });
         }
@@ -647,6 +663,7 @@ class VoiceAgentApp {
                     ollamaUrl: settings.ollamaUrl,
                     lmstudioUrl: settings.lmstudioUrl,
                     openaiUrl: settings.openaiUrl,
+                    openrouterUrl: settings.openrouterUrl,
                     openaiApiKey: settings.openaiApiKey,
                 });
                 

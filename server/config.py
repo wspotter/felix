@@ -1,7 +1,7 @@
 """
 Voice Agent Configuration
 Loads settings from environment variables with sensible defaults.
-Production-ready for AMD MI50 GPU acceleration.
+Production-ready for GPU acceleration (NVIDIA/CUDA or AMD/ROCm).
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     # Tracing
     otel_enabled: bool = Field(default=False, description="Enable OpenTelemetry tracing")
     otel_endpoint: str = Field(default="http://localhost:4318/v1/traces", description="OTLP endpoint")
+    
+    # Admin/Auth settings
+    admin_token: str = Field(default="", description="Token to protect admin dashboard (leave empty to disable)")
+    session_timeout: int = Field(default=3600, description="Session timeout seconds")
+    enable_auth: bool = Field(default=False, description="Enable multi-user auth")
+    
+    # Data persistence
+    data_dir: str = Field(default="data", description="Directory to store user/session data")
+    # Session persistence interval in seconds (0 to disable background saves)
+    session_save_interval: int = Field(default=60, description="Interval to save sessions to disk (0 disables background saving)")
+    
+    # Tool Tutor system
+    enable_tool_tutor: bool = Field(default=True, description="Enable tool tutor learning system")
+    tool_confidence_threshold: float = Field(default=0.7, ge=0, le=1, description="Confidence threshold for tool tutor examples")
     
     class Config:
         env_file = ".env"

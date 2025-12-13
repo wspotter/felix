@@ -9,7 +9,7 @@ This document describes the technical architecture of the Voice Agent system.
 
 ## System Overview
 
-Voice Agent is a real-time conversational AI assistant with barge-in (interrupt) support. The system is designed for local execution on AMD MI50 GPUs via ROCm, with no cloud dependencies.
+Voice Agent is a real-time conversational AI assistant with barge-in (interrupt) support. The system is designed for local execution using GPUs (NVIDIA/CUDA or AMD/ROCm), with no cloud dependencies.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -39,7 +39,7 @@ Voice Agent is a real-time conversational AI assistant with barge-in (interrupt)
 │  │ VAD │   │   STT    │  │   LLM    │   │   TTS   │          │         │
 │  │     │   │          │  │          │   │         │          │         │
 │  │Silero│   │whisper.cpp│  │ Ollama   │   │ Piper   │          │         │
-│  │ CPU  │   │ MI50 #1  │  │ MI50 #2  │   │  CPU    │          │         │
+│  │ CPU  │   │ GPU #1  │  │ GPU #2  │   │  CPU    │          │         │
 │  └──┬──┘   └────┬─────┘  └────┬─────┘   └────┬────┘          │         │
 │     │           │             │              │                │         │
 │     └───────────┴─────────────┴──────────────┴────────────────┘         │
@@ -121,7 +121,7 @@ FastAPI async server with WebSocket support.
 
 **`server/stt/whisper_cpp.py`** - Whisper integration:
 - Subprocess wrapper for whisper.cpp CLI
-- Built with `GGML_HIP=1` for ROCm/MI50 support
+* Built with `GGML_HIP=1` for ROCm (AMD) or build with CUDA support for NVIDIA GPUs
 - Model: `ggml-large-v3-turbo.bin`
 - Writes temp WAV file, runs CLI, parses output
 
@@ -130,7 +130,7 @@ FastAPI async server with WebSocket support.
 whisper.cpp/build/bin/whisper-cli \
     -m models/ggml-large-v3-turbo.bin \
     -f /tmp/audio.wav \
-    --gpu-device 1  # MI50 GPU index
+   --gpu-device 1  # GPU device index (NVIDIA or AMD, verify with tooling)
 ```
 
 ### 5. Language Model
@@ -197,7 +197,7 @@ piper/piper/piper \
    │                If silence >800ms → state = PROCESSING
    │
 5. STT transcribes buffered audio
-   │                whisper.cpp on MI50 GPU
+   │                whisper.cpp on GPU
    │
 6. LLM generates response
    │                Ollama with streaming
@@ -289,15 +289,15 @@ Server → Client:
 | Component | Hardware | Notes |
 |-----------|----------|-------|
 | VAD (Silero) | CPU | Lightweight, <10ms per chunk |
-| STT (whisper.cpp) | MI50 GPU #1 | ROCm/HIP, `--gpu-device 1` |
-| LLM (Ollama) | MI50 GPU #2 | ROCm, separate from STT |
+| STT (whisper.cpp) | GPU #1 | CUDA/ROCm compatible, `--gpu-device 1` |
+| LLM (Ollama) | GPU #2 | CUDA/ROCm compatible, separate from STT |
 | TTS (Piper) | CPU | Fast ONNX runtime, ~50ms |
 | WebSocket Server | CPU | Async I/O, minimal overhead |
 
 **GPU Device Mapping:**
-- Device 0: AMD RX 6600 (display)
-- Device 1: AMD MI50 #1 (STT)
-- Device 2: AMD MI50 #2 (LLM via Ollama)
+- Device 0: GPU #0 (display / integrated)
+- Device 1: GPU #1 (dedicated for STT)
+- Device 2: GPU #2 (dedicated for LLM)
 
 ## Security Considerations
 

@@ -18,10 +18,11 @@ const DEFAULT_SETTINGS = {
     model: 'llama3.2',
     
     // Backend
-    llmBackend: 'ollama',  // ollama, lmstudio, openai
+    llmBackend: 'ollama',  // ollama, lmstudio, openai, openrouter
     ollamaUrl: 'http://localhost:11434',
     lmstudioUrl: 'http://localhost:1234',
     openaiUrl: 'https://api.openai.com',
+    openrouterUrl: 'https://openrouter.ai/api/v1',
     openaiApiKey: '',
     
     // Behavior
@@ -34,7 +35,7 @@ const DEFAULT_SETTINGS = {
 const VALID_OPTIONS = {
     theme: ['midnight', 'redroom', 'pink', 'babyblue', 'teal', 'emerald', 'sunset', 'cyberpunk', 'ocean', 'rose'],
     voice: ['amy', 'lessac', 'ryan'],
-    llmBackend: ['ollama', 'lmstudio', 'openai'],
+    llmBackend: ['ollama', 'lmstudio', 'openai', 'openrouter'],
 };
 
 const STORAGE_KEY = 'voiceAgentSettings';

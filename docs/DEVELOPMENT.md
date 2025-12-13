@@ -10,7 +10,7 @@ This guide covers setting up and developing the Voice Agent project.
 ## Prerequisites
 
 - **Python 3.10+** - Core runtime
-- **AMD MI50 GPUs** - For STT/LLM acceleration (ROCm/HIP)
+-- **GPUs (NVIDIA or AMD)** - For STT/LLM acceleration (CUDA or ROCm/HIP)
 - **Ollama** - Local LLM runtime
 - **whisper.cpp** - Built with HIP support for ROCm
 - **Piper TTS** - Local text-to-speech
@@ -55,7 +55,7 @@ cp .env.example .env
 Key variables:
 ```env
 WHISPER_MODEL=ggml-large-v3-turbo.bin
-WHISPER_GPU_DEVICE=1          # MI50 GPU index (0=RX6600, 1=MI50#1, 2=MI50#2)
+WHISPER_GPU_DEVICE=1          # GPU index (0=RX6600, 1=GPU#1, 2=GPU#2)
 OLLAMA_MODEL=llama3.2
 TTS_VOICE=amy                 # Piper voice: amy, lessac, ryan
 ```
@@ -315,8 +315,8 @@ Server uses structlog for structured logging. Watch for:
 ## Performance Considerations
 
 - **VAD runs on CPU** - Silero is lightweight, <10ms per chunk
-- **STT on MI50 GPU #1** - Large model, ~1-2s for typical utterance
-- **LLM on MI50 GPU #2** - Streaming response, first token <500ms
+-- **STT on GPU #1** - Large model acceleration, ~1-2s for typical utterance
+-- **LLM on GPU #2** - Streaming response acceleration, first token <500ms
 - **TTS on CPU** - Piper is fast, ~50ms for short sentences
 
 ## Contributing
