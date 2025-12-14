@@ -38,6 +38,7 @@ if [ ! -d "venv" ]; then
 fi
 
 # Activate virtual environment
+deactivate 2>/dev/null || true
 source venv/bin/activate
 
 # Check if dependencies are installed
@@ -126,6 +127,14 @@ echo -e "${GREEN}✓ Model $MODEL available${NC}"
 HOST=${HOST:-0.0.0.0}
 PORT=${PORT:-8000}
 
+# Check if port is in use and kill the process
+PID=$(lsof -t -i:$PORT)
+if [ -n "$PID" ]; then
+    echo -e "${YELLOW}Port $PORT is in use by PID $PID. Killing...${NC}"
+    kill -9 $PID
+    sleep 1
+fi
+
 # Force torchaudio to use CPU to avoid cuDNN version mismatches
 # Silero VAD doesn't need GPU acceleration
 export TORCHAUDIO_USE_BACKEND_DISPATCHER=1
@@ -139,4 +148,11 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # Run the server
-exec python -m uvicorn server.main:app --host "$HOST" --port "$PORT" --reload
+# Exclude heavy directories to prevent "Too many open files" errors
+exec python -m uvicorn server.main:app --host "$HOST" --port "$PORT" --reload \
+    --reload-exclude "node_modules" \
+    --reload-exclude ".git" \
+    --reload-exclude "venv" \
+    --reload-exclude "test-results" \
+    --reload-exclude "playwright-report" \
+    --reload-exclude "__pycache__"

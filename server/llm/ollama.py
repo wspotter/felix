@@ -190,17 +190,17 @@ class LLMClient:
         
         # Set default URL based on backend if not provided
         if base_url:
-            self.base_url = base_url.rstrip("/")
+            self.base_url = self._normalize_base_url(base_url)
         else:
             if self.backend == "lmstudio":
                 self.base_url = getattr(settings, 'lmstudio_url', 'http://localhost:1234')
             elif self.backend == "openai":
                 self.base_url = getattr(settings, 'openai_url', 'https://api.openai.com')
             elif self.backend == "openrouter":
-                self.base_url = getattr(settings, 'openrouter_url', 'https://openrouter.ai/api/v1')
+                self.base_url = getattr(settings, 'openrouter_url', 'https://openrouter.ai')
             else:  # ollama
                 self.base_url = getattr(settings, 'ollama_url', 'http://localhost:11434')
-            self.base_url = self.base_url.rstrip("/")
+            self.base_url = self._normalize_base_url(self.base_url)
         
         self.model = model or settings.ollama_model
         self.temperature = temperature if temperature is not None else settings.ollama_temperature
@@ -233,7 +233,7 @@ class LLMClient:
         if backend:
             self.backend = backend
         if base_url:
-            self.base_url = base_url.rstrip("/")
+            self.base_url = self._normalize_base_url(base_url)
         if model:
             self.model = model
         if api_key is not None:
@@ -250,19 +250,44 @@ class LLMClient:
             url=self.base_url,
             model=self.model
         )
+
+    def _normalize_base_url(self, url: str) -> str:
+        """Normalize backend base URL and strip trailing API paths to avoid double segments."""
+        cleaned = (url or "").rstrip("/")
+        # For OpenRouter, OpenAI, or LM Studio backends, normalize the URL
+        # This prevents double paths like /api/v1/v1/models or /v1/v1/models
+        if self.backend in ("openrouter", "openai", "lmstudio"):
+            # Remove any trailing API path so we can append the correct prefix once
+            # First, collapse accidental double segments
+            cleaned = cleaned.replace("/api/v1/v1", "/api/v1")
+            cleaned = cleaned.replace("/v1/v1", "/v1")
+            for suffix in ("/api/v1", "/v1", "/api/v1/chat/completions", "/v1/chat/completions"):
+                if cleaned.endswith(suffix):
+                    cleaned = cleaned[: -len(suffix)]
+                    cleaned = cleaned.rstrip("/")
+                    break
+        return cleaned
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._client is None:
-            headers = {}
+            headers = {
+                "Content-Type": "application/json",
+            }
             # Add API key for OpenAI-compatible backends
             if self.api_key and self.backend in ("openai", "lmstudio", "openrouter"):
                 headers["Authorization"] = f"Bearer {self.api_key}"
             
+            # OpenRouter requires additional headers
+            is_openrouter = self.backend == "openrouter" or "openrouter.ai" in self.base_url
+            if is_openrouter:
+                headers["HTTP-Referer"] = "http://localhost:8000"
+                headers["X-Title"] = "Felix Voice Assistant"
+            
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers=headers,
-                timeout=httpx.Timeout(60.0, connect=10.0)
+                timeout=httpx.Timeout(120.0, connect=10.0, read=120.0)
             )
         return self._client
     
@@ -310,9 +335,15 @@ class LLMClient:
         """Get the correct API endpoint for the current backend."""
         if self.backend == "ollama":
             return "/api/chat"
-        else:
-            # LM Studio and OpenAI use /v1/chat/completions
-            return "/v1/chat/completions"
+        # Check for OpenRouter (either explicit backend or detected from URL)
+        is_openrouter = self.backend == "openrouter" or "openrouter.ai" in self.base_url
+        if is_openrouter:
+            # If the base URL already points at /api/v1, avoid duplicating the prefix
+            if self.base_url.endswith("/api/v1"):
+                return "/chat/completions"
+            return "/api/v1/chat/completions"
+        # LM Studio and OpenAI use /v1/chat/completions
+        return "/v1/chat/completions"
     
     def _build_request_body(self, messages: list[dict], stream: bool) -> dict:
         """Build request body for the current backend."""
@@ -420,96 +451,103 @@ class LLMClient:
         recent_phrases = []
         repetition_threshold = 4  # Stop if same phrase repeated 4+ times
         
-        async with client.stream("POST", endpoint, json=request_body) as response:
-            response.raise_for_status()
-            
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
+        try:
+            async with client.stream("POST", endpoint, json=request_body) as response:
+                response.raise_for_status()
                 
-                # Handle SSE format for OpenAI-compatible APIs
-                if line.startswith("data: "):
-                    line = line[6:]  # Remove "data: " prefix
-                if line == "[DONE]":
-                    break
-                
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                
-                # Handle streaming content based on backend format
-                if self.backend == "ollama" and "message" in data:
-                    message = data["message"]
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
                     
-                    # Log raw message for debugging tool call issues
-                    if "tool_calls" in message or logger.isEnabledFor(10):  # DEBUG level
-                        logger.debug("ollama_raw_message", message=message, done=data.get("done", False))
-                    
-                    # Text content - buffer it first
-                    content = message.get("content", "")
-                    if content:
-                        accumulated_content += content
-                        pending_chunks.append(content)
-                    
-                    # Tool calls (usually in final message)
-                    if "tool_calls" in message:
-                        raw_tool_calls = message["tool_calls"]
-                        logger.info("ollama_tool_calls_received", count=len(raw_tool_calls), tool_calls=raw_tool_calls)
-                        tool_calls.extend(raw_tool_calls)
-                    
-                    # Check if done (Ollama format)
-                    if data.get("done", False):
-                        logger.info("ollama_stream_done", accumulated_content_length=len(accumulated_content), tool_calls_count=len(tool_calls))
+                    # Handle SSE format for OpenAI-compatible APIs
+                    if line.startswith("data: "):
+                        line = line[6:]  # Remove "data: " prefix
+                    if line == "[DONE]":
                         break
+                    
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    # Handle streaming content based on backend format
+                    if self.backend == "ollama" and "message" in data:
+                        message = data["message"]
                         
-                elif "choices" in data:
-                    # OpenAI/LM Studio format
-                    repetition_detected = False
-                    for choice in data.get("choices", []):
-                        delta = choice.get("delta", {})
+                        # Log raw message for debugging tool call issues
+                        if "tool_calls" in message or logger.isEnabledFor(10):  # DEBUG level
+                            logger.debug("ollama_raw_message", message=message, done=data.get("done", False))
                         
-                        # Text content
-                        content = delta.get("content", "")
+                        # Text content - buffer it first
+                        content = message.get("content", "")
                         if content:
                             accumulated_content += content
                             pending_chunks.append(content)
                         
-                            # Repetition detection - check for loops
-                            # Look for repeated short phrases (like "I'm ready.")
-                            if len(accumulated_content) > 50:
-                                # Check last 200 chars for repetition patterns
-                                check_text = accumulated_content[-200:]
-                                # Common loop patterns
-                                for pattern in ["I'm ready", "I am ready", "Ready.", "...", "I'm here"]:
-                                    count = check_text.lower().count(pattern.lower())
-                                    if count >= repetition_threshold:
-                                        logger.warning("repetition_detected", pattern=pattern, count=count)
-                                        # Truncate to before repetition started
-                                        first_idx = accumulated_content.lower().find(pattern.lower())
-                                        if first_idx > 0:
-                                            accumulated_content = accumulated_content[:first_idx].strip()
-                                        else:
-                                            accumulated_content = "I apologize, I had trouble responding. Could you please rephrase your question?"
-                                        repetition_detected = True
-                                        break
-                            
-                            # Also check for excessive length (likely stuck)
-                            if len(accumulated_content) > 2000:
-                                logger.warning("response_too_long", length=len(accumulated_content))
-                                accumulated_content = accumulated_content[:1500] + "..."
-                                repetition_detected = True
+                        # Tool calls (usually in final message)
+                        if "tool_calls" in message:
+                            raw_tool_calls = message["tool_calls"]
+                            logger.info("ollama_tool_calls_received", count=len(raw_tool_calls), tool_calls=raw_tool_calls)
+                            tool_calls.extend(raw_tool_calls)
                         
-                        # Tool calls
-                        if "tool_calls" in delta:
-                            tool_calls.extend(delta["tool_calls"])
-                        
-                        # Check finish reason
-                        if choice.get("finish_reason"):
+                        # Check if done (Ollama format)
+                        if data.get("done", False):
+                            logger.info("ollama_stream_done", accumulated_content_length=len(accumulated_content), tool_calls_count=len(tool_calls))
                             break
-                    
-                    if repetition_detected:
-                        break  # Exit the line iteration loop
+                            
+                    elif "choices" in data:
+                        # OpenAI/LM Studio format
+                        repetition_detected = False
+                        for choice in data.get("choices", []):
+                            delta = choice.get("delta", {})
+                            
+                            # Text content
+                            content = delta.get("content", "")
+                            if content:
+                                accumulated_content += content
+                                pending_chunks.append(content)
+                            
+                                # Repetition detection - check for loops
+                                # Look for repeated short phrases (like "I'm ready.")
+                                if len(accumulated_content) > 50:
+                                    # Check last 200 chars for repetition patterns
+                                    check_text = accumulated_content[-200:]
+                                    # Common loop patterns
+                                    for pattern in ["I'm ready", "I am ready", "Ready.", "...", "I'm here"]:
+                                        count = check_text.lower().count(pattern.lower())
+                                        if count >= repetition_threshold:
+                                            logger.warning("repetition_detected", pattern=pattern, count=count)
+                                            # Truncate to before repetition started
+                                            first_idx = accumulated_content.lower().find(pattern.lower())
+                                            if first_idx > 0:
+                                                accumulated_content = accumulated_content[:first_idx].strip()
+                                            else:
+                                                accumulated_content = "I apologize, I had trouble responding. Could you please rephrase your question?"
+                                            repetition_detected = True
+                                            break
+                                
+                                # Also check for excessive length (likely stuck)
+                                if len(accumulated_content) > 2000:
+                                    logger.warning("response_too_long", length=len(accumulated_content))
+                                    accumulated_content = accumulated_content[:1500] + "..."
+                                    repetition_detected = True
+                            
+                            # Tool calls
+                            if "tool_calls" in delta:
+                                tool_calls.extend(delta["tool_calls"])
+                            
+                            # Check finish reason
+                            if choice.get("finish_reason"):
+                                break
+                        
+                        if repetition_detected:
+                            break  # Exit the line iteration loop
+        except httpx.RemoteProtocolError as e:
+            # LM Studio sometimes closes connection before sending final chunk
+            # If we have accumulated content, continue processing it
+            logger.warning("stream_protocol_error", error=str(e), accumulated_length=len(accumulated_content))
+            if not accumulated_content:
+                raise
         
         # After streaming completes, decide what to yield
         # If we got tool calls via API, DON'T yield the text content
@@ -788,15 +826,19 @@ class LLMClient:
                     return models
             
             elif self.backend == "openai":
-                # OpenAI: GET /v1/models
-                response = await client.get("/v1/models")
+                # OpenAI: GET /v1/models (also works for OpenRouter)
+                # Detect if this is OpenRouter by URL
+                is_openrouter = "openrouter.ai" in self.base_url
+                # OpenRouter uses /api/v1/models, while OpenAI uses /v1/models
+                models_path = "/api/v1/models" if is_openrouter else "/v1/models"
+                response = await client.get(models_path)
                 if response.status_code == 200:
                     data = response.json()
                     models = []
                     for model in data.get("data", []):
-                        # Filter to commonly used models
                         model_id = model.get("id", "")
-                        if any(prefix in model_id for prefix in ["gpt-", "o1", "chatgpt"]):
+                        # For OpenRouter, include all models; for OpenAI, filter to GPT models
+                        if is_openrouter or any(prefix in model_id for prefix in ["gpt-", "o1", "chatgpt"]):
                             models.append({
                                 "name": model_id,
                                 "owned_by": model.get("owned_by", ""),
@@ -804,9 +846,10 @@ class LLMClient:
                     return models
             
             elif self.backend == "openrouter":
-                # OpenRouter: GET /models endpoint (base URL already includes /api/v1)
-                response = await client.get("/models")
-                logger.info("openrouter_response", status_code=response.status_code, url=f"{self.base_url}/models")
+                # OpenRouter: GET /api/v1/models
+                models_path = "/models" if self.base_url.endswith("/api/v1") else "/api/v1/models"
+                response = await client.get(models_path)
+                logger.info("openrouter_response", status_code=response.status_code, url=f"{self.base_url}{models_path}")
                 if response.status_code == 200:
                     data = response.json()
                     models = []

@@ -31,6 +31,12 @@ from .tools import tool_registry, tool_executor
 from .tools.tutor.tutor import create_tool_tutor
 from .tracing import init_tracing, get_tracer, start_stt_span, start_llm_span, start_tool_span, start_tts_span
 from .auth import get_auth_manager
+from .storage.local_persistence import (
+    load_user_settings as load_local_settings,
+    save_user_settings as save_local_settings,
+    load_history as load_local_history,
+    save_history as save_local_history,
+)
 from .comfy_service import initialize_comfy_service, shutdown_comfy_service, get_comfy_service
 
 
@@ -407,7 +413,7 @@ async def get_models(
         "ollama": "http://localhost:11434",
         "lmstudio": "http://localhost:1234",
         "openai": "https://api.openai.com",
-        "openrouter": "https://openrouter.ai/api/v1",
+        "openrouter": "https://openrouter.ai",
     }
     
     # Validate backend
@@ -443,6 +449,25 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections[client_id] = websocket
         self.sessions[client_id] = Session()
+        # Try to restore chat history for this client (best effort)
+        try:
+            saved_messages = load_local_history(client_id)
+            if saved_messages:
+                self.sessions[client_id].conversation_history.clear()
+                for msg in saved_messages:
+                    role = msg.get("role")
+                    content = msg.get("content", "")
+                    name = msg.get("name")
+                    tool_call_id = msg.get("tool_call_id")
+                    tool_calls = msg.get("tool_calls")
+                    if role == "user":
+                        self.sessions[client_id].conversation_history.add_user_message(content)
+                    elif role == "assistant":
+                        self.sessions[client_id].conversation_history.add_assistant_message(content, tool_calls=tool_calls)
+                    elif role == "tool":
+                        self.sessions[client_id].conversation_history.add_tool_result(tool_call_id or "", name or "", content)
+        except Exception:
+            logger.exception("Failed to restore local chat history", client_id=client_id)
         logger.info("Client connected", client_id=client_id)
         # Record admin event for new connection
         try:
@@ -600,6 +625,15 @@ async def save_sessions_to_disk() -> None:
     await asyncio.to_thread(_save_sessions_to_disk_sync)
 
 
+def _persist_history_for_client(client_id: str, session: Session) -> None:
+    """Persist conversation history to per-client JSON file (best effort)."""
+    try:
+        messages = session.conversation_history.get_messages(include_system=False)
+        save_local_history(client_id, messages)
+    except Exception:
+        logger.exception("Failed to persist local chat history", client_id=client_id)
+
+
 async def process_audio_pipeline(
     client_id: str,
     audio_data: bytes,
@@ -753,6 +787,7 @@ async def process_audio_pipeline(
                 
                 # Add to conversation history
                 session.conversation_history.add_user_message(transcript)
+                _persist_history_for_client(client_id, session)
                 
                 # Get LLM client (uses backend settings from client config)
                 ollama = await get_llm_client()
@@ -863,6 +898,7 @@ async def process_audio_pipeline(
                                     session.conversation_history.add_tool_result(
                                         tool_call_id, tool_name, result_text
                                     )
+                                    _persist_history_for_client(client_id, session)
                                 # Notify tutor about result for learning
                                 if tool_tutor:
                                     try:
@@ -930,6 +966,7 @@ async def process_audio_pipeline(
                 
                 # Add assistant response to history
                 session.conversation_history.add_assistant_message(full_response)
+                _persist_history_for_client(client_id, session)
                 
                 # Send final response
                 await manager.send_json(client_id, {
@@ -1002,6 +1039,7 @@ async def process_text_message(
                 
                 # Add to conversation history
                 session.conversation_history.add_user_message(text)
+                _persist_history_for_client(client_id, session)
                 
                 # Get LLM client
                 ollama = await get_llm_client()
@@ -1104,6 +1142,7 @@ async def process_text_message(
                                     session.conversation_history.add_tool_result(
                                         tool_call_id, tool_name, result_text
                                     )
+                                    _persist_history_for_client(client_id, session)
                                 # Notify tutor about result
                                 if tool_tutor:
                                     try:
@@ -1152,6 +1191,7 @@ async def process_text_message(
                 
                 # Add assistant response to history
                 session.conversation_history.add_assistant_message(full_response)
+                _persist_history_for_client(client_id, session)
                 
                 # Send final response
                 await manager.send_json(client_id, {
@@ -1206,6 +1246,33 @@ async def websocket_endpoint(websocket: WebSocket):
     voice = settings.tts_voice if hasattr(settings, 'tts_voice') else 'amy'
     model = settings.ollama_model  # Read from .env properly
     voice_speed = 1.0  # Default speaking rate multiplier
+    llm_backend = "ollama"
+    llm_url = None
+    llm_api_key = None
+
+    # Restore locally persisted settings for this client (if any)
+    try:
+        saved_settings = load_local_settings(client_id)
+        if saved_settings:
+            voice = saved_settings.get("voice", voice)
+            model = saved_settings.get("model", model)
+            voice_speed = max(0.5, min(2.0, float(saved_settings.get("voiceSpeed", voice_speed))))
+            llm_backend = saved_settings.get("llmBackend", "ollama")
+            llm_url = saved_settings.get("llmUrl")
+            llm_api_key = saved_settings.get("llmApiKey")
+            # Apply backend config to LLM client on reconnect
+            try:
+                llm_client = await get_llm_client()
+                llm_client.update_config(
+                    backend=llm_backend,
+                    base_url=llm_url,
+                    model=model,
+                    api_key=llm_api_key,
+                )
+            except Exception:
+                logger.exception("Failed to apply persisted LLM settings", client_id=client_id)
+    except Exception:
+        logger.exception("Failed to load persisted settings", client_id=client_id)
     
     try:
         while True:
@@ -1265,7 +1332,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Valid Piper voices
                         valid_voices = ['amy', 'lessac', 'ryan']
                         # Valid LLM backends
-                        valid_backends = ['ollama', 'lmstudio', 'openai']
+                        valid_backends = ['ollama', 'lmstudio', 'openai', 'openrouter']
                         
                         if "voice" in data:
                             new_voice = data["voice"]
@@ -1299,6 +1366,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         elif llm_backend == "openai":
                             llm_url = data.get("openaiUrl", "https://api.openai.com")
                             llm_api_key = data.get("openaiApiKey", "")
+                        elif llm_backend == "openrouter":
+                            llm_url = data.get("openrouterUrl", "https://openrouter.ai")
+                            llm_api_key = data.get("openrouterApiKey", "")
                         
                         # Update the LLM client configuration
                         llm_client = await get_llm_client()
@@ -1308,6 +1378,42 @@ async def websocket_endpoint(websocket: WebSocket):
                             model=model,
                             api_key=llm_api_key
                         )
+
+                        # If using Ollama, ensure the requested model exists; fall back if missing
+                        if llm_backend == "ollama":
+                            try:
+                                available = await llm_client.list_models()
+                                names = set()
+                                for m in available:
+                                    for key in ("name", "model", "id"):
+                                        val = m.get(key)
+                                        if val:
+                                            names.add(val)
+                                if model not in names:
+                                    fallback_model = settings.ollama_model
+                                    logger.warning(
+                                        "ollama_model_missing_fallback",
+                                        requested=model,
+                                        fallback=fallback_model,
+                                    )
+                                    model = fallback_model
+                                    llm_client.model = fallback_model
+                                    await manager.send_json(client_id, {
+                                        "type": "settings_warning",
+                                        "message": f"Model '{model}' not found on Ollama. Switched to '{fallback_model}'."
+                                    })
+                            except Exception:
+                                logger.exception("ollama_model_check_failed", client_id=client_id)
+
+                        # Persist settings locally for this client
+                        save_local_settings(client_id, {
+                            "voice": voice,
+                            "model": model,
+                            "voiceSpeed": voice_speed,
+                            "llmBackend": llm_backend,
+                            "llmUrl": llm_url,
+                            "llmApiKey": llm_api_key,
+                        })
                         
                         logger.info(
                             "Settings updated",

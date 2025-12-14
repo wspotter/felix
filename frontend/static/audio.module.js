@@ -18,12 +18,13 @@ export class AudioHandler {
         this.gainNode = null;  // For volume control
         
         // Audio settings
-        this.inputSampleRate = 16000;
+        this.targetSampleRate = 16000;  // What we send to server (VAD expects this)
         this.outputSampleRate = 22050;
         this.sampleRate = 16000;
         this.channels = 1;
         this.bufferSize = 4096;
         this.volume = 1.0;  // 0.0 to 1.0
+        this.actualInputSampleRate = null;  // Will be set after init
         
         // Callbacks
         this.onAudioData = null;
@@ -56,13 +57,15 @@ export class AudioHandler {
     
     async initialize() {
         try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: this.sampleRate,
-            });
+            // Create AudioContext - browser may not support 16kHz, we'll resample
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Store the actual sample rate the browser uses
+            this.actualInputSampleRate = this.audioContext.sampleRate;
+            console.log(`AudioContext sample rate: ${this.actualInputSampleRate}, target: ${this.targetSampleRate}`);
             
             this.mediaStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
-                    sampleRate: this.sampleRate,
                     channelCount: this.channels,
                     echoCancellation: true,
                     noiseSuppression: true,
@@ -104,7 +107,14 @@ export class AudioHandler {
             if (!this.isRecording) return;
             
             const inputData = event.inputBuffer.getChannelData(0);
-            const pcm16 = this.float32ToInt16(inputData);
+            
+            // Resample from native rate to 16kHz if needed
+            let processedData = inputData;
+            if (this.actualInputSampleRate !== this.targetSampleRate) {
+                processedData = this.resample(inputData, this.actualInputSampleRate, this.targetSampleRate);
+            }
+            
+            const pcm16 = this.float32ToInt16(processedData);
             
             if (this.onAudioData) {
                 this.onAudioData(pcm16);
@@ -121,7 +131,7 @@ export class AudioHandler {
         this.processor.connect(this.audioContext.destination);
         
         this.isRecording = true;
-        console.log('Recording started');
+        console.log(`Recording started (native: ${this.actualInputSampleRate}Hz -> target: ${this.targetSampleRate}Hz)`);
     }
     
     stopRecording() {
@@ -244,6 +254,35 @@ export class AudioHandler {
         }
         
         return audioBuffer;
+    }
+    
+    /**
+     * Resample audio from one sample rate to another using linear interpolation
+     * @param {Float32Array} inputData - Input audio samples
+     * @param {number} inputRate - Input sample rate
+     * @param {number} outputRate - Output sample rate
+     * @returns {Float32Array} - Resampled audio
+     */
+    resample(inputData, inputRate, outputRate) {
+        if (inputRate === outputRate) {
+            return inputData;
+        }
+        
+        const ratio = inputRate / outputRate;
+        const outputLength = Math.round(inputData.length / ratio);
+        const output = new Float32Array(outputLength);
+        
+        for (let i = 0; i < outputLength; i++) {
+            const srcIndex = i * ratio;
+            const srcIndexFloor = Math.floor(srcIndex);
+            const srcIndexCeil = Math.min(srcIndexFloor + 1, inputData.length - 1);
+            const frac = srcIndex - srcIndexFloor;
+            
+            // Linear interpolation
+            output[i] = inputData[srcIndexFloor] * (1 - frac) + inputData[srcIndexCeil] * frac;
+        }
+        
+        return output;
     }
     
     float32ToInt16(float32Array) {
